@@ -1,18 +1,16 @@
 import base64
 import io
 
-import requests
-from bs4 import BeautifulSoup
 from langchain_core.tools import tool
 from PIL import ImageGrab
+
+from infra.browser import get_browser_manager
 
 
 @tool
 def fetch_html(url: str) -> str:
-    """Fetch and return the raw HTML content of a given URL."""
-    response = requests.get(url, timeout=10)
-    response.raise_for_status()
-    return response.text
+    """Fetch and return the raw HTML content of a given URL using a headless browser."""
+    return get_browser_manager().get_html(url)
 
 
 @tool
@@ -21,14 +19,18 @@ def fetch_content(url: str) -> str:
 
     Use this when you want to read the actual page content, not raw markup.
     """
-    response = requests.get(url, timeout=10)
-    response.raise_for_status()
-    soup = BeautifulSoup(response.text, "html.parser")
-    for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
-        tag.decompose()
-    text = soup.get_text(separator="\n")
-    lines = (line.strip() for line in text.splitlines())
-    return "\n".join(line for line in lines if line)
+    return get_browser_manager().get_text(url)
+
+
+@tool
+def webpage_screenshot(url: str) -> str:
+    """Open a URL in a headless browser and return a full-page screenshot as a base64-encoded PNG data URI.
+
+    Use this when you need a complete screenshot of a specific webpage.
+    The returned format matches the screen screenshot tool (data:image/png;base64,...)
+    so it can be consumed by vision-capable models the same way.
+    """
+    return get_browser_manager().screenshot(url)
 
 
 @tool
