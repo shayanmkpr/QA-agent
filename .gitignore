@@ -1,0 +1,117 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+eggs/
+*.whl
+sdist/
+develop-eggs/
+.eggs/
+*.manifest
+*.spec
+pip-wheel-metadata/
+pip-log.txt
+pip-delete-this-directory.txt
+
+# --- Virtual Environment ---
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+pythonenv*
+
+# --- Environment & Secrets ---
+.env
+.env.*
+!.env.example
+*.secret
+secrets/
+credentials.json
+service-account.json
+*.pem
+*.key
+*.crt
+
+# --- IDE ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.pydevproject
+.settings/
+*.sublime-project
+*.sublime-workspace
+.spyproject/
+.spyproject/
+.metadata/
+
+# --- OS ---
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# --- Jupyter ---
+*.ipynb_checkpoints/
+.ipynb_checkpoints/
+.ipynb
+.ipynb_checkpoints/
+
+# --- Testing & Coverage ---
+.tox/
+.coverage
+.coverage.*
+htmlcov/
+.coverage.*
+.pytest_cache/
+.coverage
+.cache
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+.mypy_cache/
+.ruff_cache/
+
+# --- LangChain / LangSmith ---
+.langsmith*
+
+# --- Database & Data ---
+*.db
+*.sqlite
+*.sqlite3
+*.duckdb
+data/
+!data/.gitkeep
+
+# --- Logs ---
+*.log
+logs/
+
+# --- Docker ---
+docker-compose.override.yml
+
+# --- Misc ---
+tmp/
+temp/
+.tmp/
+*.tmp
+*.bak
+*.orig
+*.old
