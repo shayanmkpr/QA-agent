@@ -24,10 +24,11 @@ def _validate_url(url: str) -> str:
     # Block private / loopback / reserved IP ranges
     try:
         addr = ipaddress.ip_address(hostname)
-        if addr.is_private or addr.is_loopback or addr.is_reserved or addr.is_unspecified:
-            raise ValueError(f"Access to internal IP blocked: {hostname}")
     except ValueError:
         # Not an IP address (e.g. example.com) — acceptable
         pass
+    else:
+        if addr.is_private or addr.is_loopback or addr.is_reserved or addr.is_unspecified:
+            raise ValueError(f"Access to internal IP blocked: {hostname}")
 
     return url

@@ -26,7 +26,7 @@ User gives URL
        ▼
 ┌─────────────┐     tool_call?     ┌───────────┐
 │   agent     │ ─────────────────▶ │  tools    │
-│  (LLM)      │ ◀──────────────── │ (fetch)   │
+│  (LLM)      │ ◀───────────────── │ (fetch)   │
 └─────────────┘   tool result      └───────────┘
        │
        │ no tool call (done)
