@@ -8,6 +8,10 @@
 - **Downstream dependencies**: `playwright.sync_api.sync_playwright`, `BeautifulSoup` (for text extraction).
 - **Runtime environment**: The same Python process as the agent graph. Requires `playwright` + Chromium binaries installed.
 
+- **URL validation**: The browser layer does **not** perform URL validation. Callers (the tool layer) are responsible for rejecting unsafe URLs before passing them to `BrowserManager`.
+
+- **URL validation**: The browser layer does **not** perform URL validation. Callers (the tool layer) are responsible for rejecting unsafe URLs before passing them to `BrowserManager`.
+
 ## Lifecycle
 
 Initialization is deferred until the first `_ensure_ready()` call.

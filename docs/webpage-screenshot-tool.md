@@ -27,12 +27,20 @@ def webpage_screenshot(url: str) -> str:
     return get_browser_manager().screenshot(url)
 ```
 
-`BrowserManager.screenshot` performs:
+## URL validation / SSRF protection
 
-1. Ensures the browser is started via `_ensure_ready()`.
-2. Creates a new page, navigates to `url`, and waits for `networkidle`.
-3. Captures a full-page PNG (`page.screenshot(full_page=True)`).
-4. Base64-encodes the bytes and returns a string prefixed with `data:image/png;base64,`.
+Before delegating to `BrowserManager`, the tool calls `_validate_url(url)` from `app.tools._url`:
+
+```python
+from app.tools._url import _validate_url
+
+@tool
+def webpage_screenshot(url: str) -> str:
+    _validate_url(url)
+    return get_browser_manager().screenshot(url)
+```
+
+`_validate_url` rejects non-HTTP(S) schemes, localhost/loopback hosts, and private/reserved IP ranges. If validation fails it raises `ValueError`, which `ToolNode` surfaces to the LLM as an error message without crashing the graph.
 
 ## Error handling
 

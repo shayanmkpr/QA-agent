@@ -25,13 +25,20 @@ def fetch_content(url: str) -> str:
     return get_browser_manager().get_text(url)
 ```
 
-When called, `BrowserManager` performs the following:
+## URL validation / SSRF protection
 
-1. Ensures the headless Chromium browser is started.
-2. Opens a new page, navigates to `url`, and waits until the network is idle.
-3. Retrieves the raw HTML.
-4. Passes the HTML through BeautifulSoup to strip scripts, styles, navigation, headers, footers, and asides.
-5. Returns clean text with empty lines removed.
+Before delegating to `BrowserManager`, the tool calls `_validate_url(url)` from `app.tools._url`:
+
+```python
+from app.tools._url import _validate_url
+
+@tool
+def fetch_content(url: str) -> str:
+    _validate_url(url)
+    return get_browser_manager().get_text(url)
+```
+
+`_validate_url` rejects non-HTTP(S) schemes, localhost/loopback hosts, and private/reserved IP ranges. If validation fails it raises `ValueError`, which `ToolNode` surfaces to the LLM as an error message without crashing the graph.
 
 ## Error handling
 
