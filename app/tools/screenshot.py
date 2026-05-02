@@ -15,7 +15,7 @@ def screenshot() -> str:
     """
     try:
         img = ImageGrab.grab()
-    except Exception as exc:  # FIXME: Catch specific PIL exceptions, not bare Exception.  # FIXME: Catch specific PIL exceptions, not bare Exception.
+    except OSError as exc:
         return (
             f"[screenshot failed: {exc}]\n\n"
             "Hint: On macOS, grant the terminal app Screen Recording permission in "
