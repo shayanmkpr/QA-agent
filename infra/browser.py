@@ -12,7 +12,7 @@ except ImportError:
 class BrowserManager:
     """Manages a headless Playwright browser (default: Chromium) for page interaction."""
 
-    def __init__(self, browser_type: str = "chromium"):
+    def __init__(self, browser_type: str = "playwright"):
         self.browser_type = browser_type
         self._pw = None
         self._browser = None
