@@ -2,6 +2,8 @@
 
 A LangChain tool is a typed Python function, decorated with `@tool`, that the LLM can invoke during the agent loop by emitting a `tool_call`. The `ToolNode` receives the call, executes the function, appends a `ToolMessage` to `AgentState.messages`, and returns control to the LLM node.
 
+
+
 ## Context
 
 - **Upstream caller**: `main.py` invokes `graph.invoke({"url": url})`.
