@@ -1,0 +1,4 @@
+URL,Issue Type,Description,Category
+https://www.google.com/intl/en_ir/ads/?subid=ww-ww-et-g-awa-a-g_hpafoot1_1!o2&utm_source=google.com&utm_medium=referral&utm_campaign=google_hpafooter&fg=1,broken_link,"HTTPSConnectionPool(host='ads.google.com', port=443): Max retries exceeded with url: /intl/en_ir/home/?subid=ww-ww-et-g-awa-a-g_hpafoot1_1!o2&utm_source=google.com&utm_medium=referral&utm_campaign=google_hpafooter&fg=1 (Caused by NewConnectionError(""HTTPSConnection(host='ads.google.com', port=443): Failed to establish a new connection: [Errno 61] Connection refused""))",backend
+https://www.google.com/services/?subid=ww-ww-et-g-awa-a-g_hpbfoot1_1!o2&utm_source=google.com&utm_medium=referral&utm_campaign=google_hpbfooter&fg=1,broken_link,HTTP 403,backend
+https://support.google.com/websearch/?p=ws_results_help&hl=en-IR&fg=1,broken_link,HTTP 404,backend
