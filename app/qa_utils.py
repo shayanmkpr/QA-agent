@@ -3,11 +3,31 @@
 TODO: add CORS header checks, console error capture, performance timing.
 """
 
+import base64
+import io
 from typing import List, Dict
 from urllib.parse import urljoin, urlparse
 
+from PIL import Image
+
 import requests
 from bs4 import BeautifulSoup
+
+
+def compress_image(data_uri: str, max_size: int = 1024) -> str:
+    """Resize an image so the longest edge <= max_size. Returns a PNG data URI."""
+    b64_data = data_uri.split(",", 1)[1] if "," in data_uri else data_uri
+    img = Image.open(io.BytesIO(base64.b64decode(b64_data)))
+
+    w, h = img.size
+    if w > max_size or h > max_size:
+        ratio = max_size / max(w, h)
+        img = img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
+
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+    return f"data:image/png;base64,{b64}"
 
 
 def _is_internal(url: str, base_url: str) -> bool:

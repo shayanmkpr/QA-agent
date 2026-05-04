@@ -11,6 +11,7 @@ def _openai():
     return ChatOpenAI(
         model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
         temperature=0,
+        base_url=os.getenv("OPENAI_BASE_URL") or None,
     )
 
 
@@ -18,7 +19,7 @@ def _openrouter():
     return ChatOpenAI(
         model=os.getenv("OPENROUTER_MODEL", "openai/gpt-4o-mini"),
         temperature=0,
-        base_url="https://openrouter.ai/api/v1",
+        base_url=os.getenv("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
         api_key=os.getenv("OPENROUTER_API_KEY"),
     )
 
@@ -30,5 +31,6 @@ _registry = {
 
 
 def get_llm():
+    # TODO: dynamically detect the model's max context window (e.g. via API metadata or model mapping)
     factory = _registry[PROVIDER]
     return factory()

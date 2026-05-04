@@ -11,7 +11,7 @@ from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AI
 from infra.config import get_llm
 from infra import storage
 from app.tools import fetch_html, fetch_content, webpage_screenshot, screenshot
-from app.qa_utils import check_resources
+from app.qa_utils import check_resources, compress_image
 
 
 class AgentState(TypedDict):
@@ -95,7 +95,8 @@ def _llm_compare(
     current_screenshot: str,
 ) -> list[dict]:
     """Ask the LLM to visually compare current vs reference screenshots."""
-    ref_screenshot = ref.get("screenshot", "")
+    ref_screenshot = compress_image(ref.get("screenshot", ""))
+    current_screenshot = compress_image(current_screenshot)
     prompt = (
         "You are a QA tester comparing a webpage against its reference snapshot.\n\n"
         "Look for visual and structural abnormalities such as:\n"
