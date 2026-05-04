@@ -1,6 +1,10 @@
 import argparse
+import json
 from infra.validate import validate_all
-from app.graph import graph
+from infra import storage
+from infra.config import get_llm
+from app.graph import graph, tools
+from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
 
 
 def main():
@@ -22,24 +26,78 @@ def main():
 
     url = args.url or input("URL: ").strip()
 
-    if args.set_reference:
-        mode = "set_reference"
-    elif args.test:
-        mode = "test"
-    else:
-        mode = input("Mode (set_reference / test): ").strip()
+    # 1. Check for existing reference
+    ref_exists = storage.reference_exists(url)
 
-    # Kick off the graph with an empty message list so the agent node
-    # initialises the conversation.
+    if not ref_exists:
+        mode = "set_reference"
+        print("No reference snapshot found. Running set-reference flow automatically.")
+    elif args.set_reference:
+        mode = "set_reference"
+    else:
+        ans = input("Reference found. Run QA test? [y/N]: ").strip().lower()
+        if ans != "y":
+            return
+        mode = "test"
+
+    # 2. Run the graph
     result = graph.invoke({"url": url, "mode": mode, "messages": []})
 
     if mode == "set_reference":
-        print(f"Reference saved. Snapshot: {result.get('screenshot', 'N/A')[:50]}...")
-        print(f"HTML length: {len(result.get('html', ''))}")
-    else:
-        report_path = result.get("report_path", "qa_report.csv")
-        print(f"Report written to: {report_path}")
-        print(f"Total issues found: {len(result.get('issues', []))}")
+        print("Reference saved.")
+        return
+
+    # 3. Print short summary
+    issues = result.get("issues", [])
+    print(f"Test complete — {len(issues)} issue(s) found.")
+
+    # 4. Chat loop with tool access
+    print()
+    print("You can now ask follow-up questions. Type 'done' to exit.")
+    print()
+
+    tool_map = {t.name: t for t in tools}
+    chat_llm = get_llm().bind_tools(tools)
+
+    history = [
+        SystemMessage(content=(
+            f"You are a QA assistant helping investigate the page {url}. "
+            f"The automated test found {len(issues)} issues. "
+            "You have browser tools available — use them to inspect the page, "
+            "take screenshots, fetch HTML, or fetch rendered text content. "
+            "Help the user understand what's happening."
+            f"\n\nInitial issues: {json.dumps(issues, indent=2)}"
+        )),
+    ]
+
+    while True:
+        user_input = input("You: ").strip()
+        if user_input.lower() == "done":
+            break
+
+        history.append(HumanMessage(content=user_input))
+
+        for _ in range(10):
+            response = chat_llm.invoke(history)
+            history.append(response)
+
+            if not response.tool_calls:
+                break
+
+            for tc in response.tool_calls:
+                tool_fn = tool_map.get(tc["name"])
+                if not tool_fn:
+                    result_str = f"Unknown tool: {tc['name']}"
+                else:
+                    try:
+                        result_str = tool_fn.invoke(tc["args"])
+                    except Exception as e:
+                        result_str = f"Error: {e}"
+                history.append(
+                    ToolMessage(content=str(result_str), tool_call_id=tc["id"], name=tc["name"])
+                )
+
+        print(f"\nAgent: {response.content}\n")
 
 
 if __name__ == "__main__":
