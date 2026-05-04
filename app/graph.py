@@ -1,18 +1,29 @@
-from typing import Annotated, TypedDict
 import csv
 import json
 import os
 from pathlib import Path
+from typing import Annotated, TypedDict
 
+from langchain_core.messages import (
+    AIMessage,
+    BaseMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolMessage,
+)
 from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
-from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AIMessage, ToolMessage
 
-from infra.config import get_llm
-from infra import storage
-from app.tools import fetch_html, fetch_content, webpage_screenshot, write_report  # , screenshot
 from app.qa_utils import check_resources, compress_image
+from app.tools import (  # , screenshot
+    fetch_content,
+    fetch_html,
+    webpage_screenshot,
+    write_report,
+)
+from infra import storage
+from infra.config import get_llm
 
 
 class AgentState(TypedDict):
@@ -64,6 +75,7 @@ def _extract_tool_results(messages: list[BaseMessage]) -> tuple[str, str]:
 # ---------------------------------------------------------------------------
 # Nodes
 # ---------------------------------------------------------------------------
+
 
 def agent(state: AgentState) -> dict:
     if not state["messages"]:
@@ -124,13 +136,15 @@ def _llm_compare(
     ]
     include_html = os.getenv("INCLUDE_HTML_IN_VLM", "true").lower() != "false"
     if include_html:
-        content_blocks.append({
-            "type": "text",
-            "text": (
-                f"Current HTML length: {len(current_html)} chars. "
-                f"Reference HTML length: {len(ref.get('html', ''))} chars."
-            ),
-        })
+        content_blocks.append(
+            {
+                "type": "text",
+                "text": (
+                    f"Current HTML length: {len(current_html)} chars. "
+                    f"Reference HTML length: {len(ref.get('html', ''))} chars."
+                ),
+            }
+        )
     print(f"[_llm_compare] HTML included in VLM prompt: {include_html}")
 
     messages = [
@@ -209,6 +223,7 @@ def report_node(state: AgentState) -> dict:
 # Routing
 # ---------------------------------------------------------------------------
 
+
 def route_after_agent(state: AgentState) -> str:
     last_msg = state["messages"][-1]
     if hasattr(last_msg, "tool_calls") and last_msg.tool_calls:
@@ -236,7 +251,12 @@ builder.set_entry_point("agent")
 builder.add_conditional_edges(
     "agent",
     route_after_agent,
-    {"tools": "tools", "save_reference": "save_reference", "analyze": "analyze", END: END},
+    {
+        "tools": "tools",
+        "save_reference": "save_reference",
+        "analyze": "analyze",
+        END: END,
+    },
 )
 builder.add_edge("tools", "agent")
 builder.add_edge("save_reference", END)
