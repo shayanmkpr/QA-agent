@@ -67,6 +67,9 @@ def main():
             "take screenshots, fetch HTML, or fetch rendered text content. "
             "Help the user understand what's happening."
             f"\n\nInitial issues: {json.dumps(issues, indent=2)}"
+            "\n\nYou also have a `write_report` tool. Use it when the user asks you to "
+            "write or save the QA report. Pass a JSON array of issue objects, each with "
+            "url, issue_type, description, and category."
         )),
     ]
 

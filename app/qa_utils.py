@@ -17,16 +17,21 @@ from bs4 import BeautifulSoup
 def compress_image(data_uri: str, max_size: int = 1024) -> str:
     """Resize an image so the longest edge <= max_size. Returns a PNG data URI."""
     b64_data = data_uri.split(",", 1)[1] if "," in data_uri else data_uri
+    raw_len = len(b64_data)
     img = Image.open(io.BytesIO(base64.b64decode(b64_data)))
 
     w, h = img.size
     if w > max_size or h > max_size:
         ratio = max_size / max(w, h)
         img = img.resize((int(w * ratio), int(h * ratio)), Image.LANCZOS)
+        print(f"[compress] {w}x{h} -> {img.size[0]}x{img.size[1]}, ~{raw_len // 1000}KB -> ", end="")
+    else:
+        print(f"[compress] {w}x{h} (no resize needed, ~{raw_len // 1000}KB) -> ", end="")
 
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+    print(f"~{len(b64) // 1000}KB")
     return f"data:image/png;base64,{b64}"
 
 

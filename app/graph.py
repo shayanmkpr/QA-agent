@@ -1,6 +1,7 @@
 from typing import Annotated, TypedDict
 import csv
 import json
+import os
 from pathlib import Path
 
 from langgraph.graph import StateGraph, END
@@ -10,7 +11,7 @@ from langchain_core.messages import BaseMessage, SystemMessage, HumanMessage, AI
 
 from infra.config import get_llm
 from infra import storage
-from app.tools import fetch_html, fetch_content, webpage_screenshot, screenshot
+from app.tools import fetch_html, fetch_content, webpage_screenshot, write_report  # , screenshot
 from app.qa_utils import check_resources, compress_image
 
 
@@ -26,8 +27,9 @@ class AgentState(TypedDict):
 
 # LLM with tool binding for the agent loop.
 # Plain LLM (no tools) is used for vision comparison so it doesn't try to call tools.
-tools = [fetch_html, fetch_content, webpage_screenshot, screenshot]
-llm = get_llm().bind_tools(tools)
+tools = [fetch_html, fetch_content, webpage_screenshot, write_report]  # , screenshot
+tool_choice = os.getenv("TOOL_CHOICE") or None  # "any" for backends that reject "auto"
+llm = get_llm().bind_tools(tools, tool_choice=tool_choice)
 llm_plain = get_llm()
 
 
@@ -35,11 +37,14 @@ def _system_prompt(mode: str) -> str:
     if mode == "set_reference":
         return (
             "You are a QA testing assistant. Capture a reference snapshot of the target page. "
-            "Fetch its raw HTML and take a full-page screenshot."
+            "Fetch its raw HTML and take a full-page screenshot. Do exactly these two steps "
+            "and nothing more."
         )
     return (
         "You are a QA testing assistant. Fetch the current HTML and a full-page screenshot "
-        "of the target page so it can be compared against a saved reference."
+        "of the target page so it can be compared against a saved reference. "
+        "Use the minimum number of tool calls needed. Do not fetch multiple things in parallel "
+        "unless necessary."
     )
 
 
@@ -111,23 +116,26 @@ def _llm_compare(
         "If no issues are found, return an empty array []."
     )
 
+    content_blocks = [
+        {"type": "text", "text": "Reference screenshot:"},
+        {"type": "image_url", "image_url": {"url": ref_screenshot}},
+        {"type": "text", "text": "Current screenshot:"},
+        {"type": "image_url", "image_url": {"url": current_screenshot}},
+    ]
+    include_html = os.getenv("INCLUDE_HTML_IN_VLM", "true").lower() != "false"
+    if include_html:
+        content_blocks.append({
+            "type": "text",
+            "text": (
+                f"Current HTML length: {len(current_html)} chars. "
+                f"Reference HTML length: {len(ref.get('html', ''))} chars."
+            ),
+        })
+    print(f"[_llm_compare] HTML included in VLM prompt: {include_html}")
+
     messages = [
         SystemMessage(content=prompt),
-        HumanMessage(
-            content=[
-                {"type": "text", "text": "Reference screenshot:"},
-                {"type": "image_url", "image_url": {"url": ref_screenshot}},
-                {"type": "text", "text": "Current screenshot:"},
-                {"type": "image_url", "image_url": {"url": current_screenshot}},
-                {
-                    "type": "text",
-                    "text": (
-                        f"Current HTML length: {len(current_html)} chars. "
-                        f"Reference HTML length: {len(ref.get('html', ''))} chars."
-                    ),
-                },
-            ]
-        ),
+        HumanMessage(content=content_blocks),
     ]
 
     try:
