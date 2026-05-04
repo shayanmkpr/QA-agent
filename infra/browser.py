@@ -92,12 +92,19 @@ class BrowserManager:
         return "\n".join(line for line in lines if line)
 
     def close(self) -> None:
-        if self._browser:
-            self._browser.close()
-            self._browser = None
-        if self._pw:
-            self._pw.stop()
-            self._pw = None
+        b, pw = self._browser, self._pw
+        self._browser = None
+        self._pw = None
+        try:
+            if b:
+                b.close()
+        except Exception:
+            pass
+        try:
+            if pw:
+                pw.stop()
+        except Exception:
+            pass
 
     def __enter__(self):
         return self

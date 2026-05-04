@@ -3,6 +3,7 @@ import json
 from infra.validate import validate_all
 from infra import storage
 from infra.config import get_llm
+from infra.browser import get_browser_manager
 from app.graph import graph, tools
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
 
@@ -51,6 +52,12 @@ def main():
     issues = result.get("issues", [])
     print(f"Test complete — {len(issues)} issue(s) found.")
 
+    # Close browser so interactive mode gets a fresh connection
+    try:
+        get_browser_manager().close()
+    except Exception:
+        pass
+
     # 4. Chat loop with tool access
     print()
     print("You can now ask follow-up questions. Type 'done' to exit.")
@@ -96,11 +103,22 @@ def main():
                         result_str = tool_fn.invoke(tc["args"])
                     except Exception as e:
                         result_str = f"Error: {e}"
+                result_str = str(result_str)
+                if result_str.startswith("data:image/"):
+                    result_str = result_str[:75] + f" <{len(result_str) // 1024}KB base64 truncated>"
+                elif len(result_str) > 2000:
+                    result_str = result_str[:2000] + f"\n... [{len(result_str)} chars total, truncated]"
                 history.append(
-                    ToolMessage(content=str(result_str), tool_call_id=tc["id"], name=tc["name"])
+                    ToolMessage(content=result_str, tool_call_id=tc["id"], name=tc["name"])
                 )
 
         print(f"\nAgent: {response.content}\n")
+        if not str(response.content).strip():
+            print("[debug] empty response, retrying without tools")
+            response = get_llm().invoke(history)
+            print(f"\nAgent: {response.content}\n")
+        if not str(response.content).strip():
+            print(f"[debug] still empty — response type={type(response).__name__} content_type={type(response.content).__name__} content_repr={repr(response.content)[:200]}")
 
 
 if __name__ == "__main__":
