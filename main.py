@@ -4,6 +4,7 @@ from infra.validate import validate_all
 from infra import storage
 from infra.config import get_llm
 from infra.browser import get_browser_manager
+from infra.credentials import get_credential_store
 from app.graph import graph, tools
 from langchain_core.messages import SystemMessage, HumanMessage, ToolMessage
 
@@ -27,7 +28,6 @@ def main():
 
     url = args.url or input("URL: ").strip()
 
-    # 1. Check for existing reference
     ref_exists = storage.reference_exists(url)
 
     if not ref_exists:
@@ -41,24 +41,26 @@ def main():
             return
         mode = "test"
 
-    # 2. Run the graph
-    result = graph.invoke({"url": url, "mode": mode, "messages": []})
+    credentials = get_credential_store().all()
+    result = graph.invoke({
+        "url": url,
+        "mode": mode,
+        "messages": [],
+        "credentials": credentials,
+    })
 
     if mode == "set_reference":
         print("Reference saved.")
         return
 
-    # 3. Print short summary
     issues = result.get("issues", [])
     print(f"Test complete — {len(issues)} issue(s) found.")
 
-    # Close browser so interactive mode gets a fresh connection
     try:
         get_browser_manager().close()
     except Exception:
         pass
 
-    # 4. Chat loop with tool access
     print()
     print("You can now ask follow-up questions. Type 'done' to exit.")
     print()
@@ -73,6 +75,13 @@ def main():
             "You have browser tools available — use them to inspect the page, "
             "take screenshots, fetch HTML, or fetch rendered text content. "
             "Help the user understand what's happening."
+            "\n\nScanning & scrolling:"
+            "\n- To find something on the page, take a screenshot or fetch content "
+            "to see the current viewport. If you don't see it, use scroll_down() "
+            "and check again. Repeat until you find it or reach the bottom."
+            "\n- Once you find what you need, call compact_context(summary) BEFORE "
+            "the next action. This removes old screenshots and large outputs from "
+            "context to save tokens."
             f"\n\nInitial issues: {json.dumps(issues, indent=2)}"
             "\n\nYou also have a `write_report` tool. Use it when the user asks you to "
             "write or save the QA report. Pass a JSON array of issue objects, each with "
@@ -111,6 +120,27 @@ def main():
                 history.append(
                     ToolMessage(content=result_str, tool_call_id=tc["id"], name=tc["name"])
                 )
+
+                # Compact context after compact_context tool is called
+                if tc["name"] == "compact_context":
+                    summary = ""
+                    content = str(result_str)
+                    if "Preserved summary:" in content:
+                        summary = content.split("Preserved summary:", 1)[1].strip()
+                    # Rebuild history: system message + summary + fresh start
+                    sys_msg = None
+                    for m in history:
+                        if isinstance(m, SystemMessage):
+                            sys_msg = m
+                            break
+                    history = [sys_msg] if sys_msg else []
+                    history.append(HumanMessage(
+                        content=f"[Context compacted] {summary}"
+                    ))
+                    history.append(AIMessage(
+                        content="Context compacted. Proceeding with the saved summary."
+                    ))
+                    break  # Exit the tool-call loop, let the LLM re-evaluate
 
         print(f"\nAgent: {response.content}\n")
         if not str(response.content).strip():

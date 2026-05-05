@@ -1,59 +1,108 @@
 # BrowserManager
 
-`BrowserManager` lazily initializes a headless Playwright browser (default Chromium) and exposes page-interaction helpers used by the agent's web tools.
+`BrowserManager` manages a single headless Playwright browser instance that persists across tool calls, preserving cookies, localStorage, and login state throughout a QA session. It follows a browser → context → page hierarchy, exposing a persistent page for all interactions.
 
-## Context
+## Architecture
 
-- **Upstream callers**: `app/tools/fetch_html.py`, `app/tools/fetch_content.py`, and `app/tools/webpage_screenshot.py` all call `get_browser_manager()` to obtain a global singleton instance.
-- **Downstream dependencies**: `playwright.sync_api.sync_playwright`, `BeautifulSoup` (for text extraction).
-- **Runtime environment**: The same Python process as the agent graph. Requires `playwright` + Chromium binaries installed.
+A single `BrowserManager` instance owns exactly one browser, one context, and one page at a time:
 
-- **URL validation**: The browser layer does **not** perform URL validation. Callers (the tool layer) are responsible for rejecting unsafe URLs before passing them to `BrowserManager`.
+```
+sync_playwright().start()          → _pw
+  └─ launcher.launch()             → _browser (chromium by default)
+       └─ browser.new_context()    → _context
+            └─ context.new_page()  → _page (the persistent page)
+```
 
-- **URL validation**: The browser layer does **not** perform URL validation. Callers (the tool layer) are responsible for rejecting unsafe URLs before passing them to `BrowserManager`.
+**Session persistence**: Because `_browser`, `_context`, and `_page` are kept alive across calls to `navigate()`, `click()`, `fill_fields()`, etc., any cookies set by the server, localStorage mutations from JavaScript, or authenticated sessions survive. A login performed during one tool call carries into the next without re-authentication. This is the central design motivation — QA flows (login → navigate → assert → logout) require state continuity.
+
+**Key design choices**:
+- **Headless by default.** Playwright's `launch()` operates headless unless overridden via environment variables (`PLAYWRIGHT_HEADLESS=false` or similar) — handled by Playwright internals, not `BrowserManager`.
+- **`wait_until="networkidle"`** on every `goto`, `click`, and `fill_fields` call. This ensures the page has settled (no outstanding network requests for 500ms) before returning control.
 
 ## Lifecycle
 
-Initialization is deferred until the first `_ensure_ready()` call.
+All resources are created lazily. No browser process launches at `__init__()` time — only when the first call that requires a page is made.
 
-1. `sync_playwright()` is evaluated on import. If missing, `sync_playwright` is set to `None` and all subsequent calls return an error string.
-2. On first use, `_ensure_ready()` starts Playwright (`sync_playwright().start()`), then launches Chromium (`self._browser = self._pw.chromium.launch()`).
-3. The manager creates a fresh `page` per operation (`new_page()`) and closes it in a `finally` block.
+| Method | Guards / Behavior |
+|---|---|
+| `_ensure_ready()` | Checks `sync_playwright` is importable. Starts `sync_playwright().start()` if `_pw is None`. Launches the browser if `_browser is None`. Returns `None` on success, an error string on failure. |
+| `_ensure_context()` | Calls `_ensure_ready()` first. Creates `_browser.new_context()` if `_context is None`. Returns error string or `None`. |
+| `get_page()` | Calls `_ensure_context()` first. Creates `_context.new_page()` if `_page is None`. Returns the `Page` object. **Raises `RuntimeError`** if any prior step failed. |
+| `clear_context()` | Closes `_page` then `_context` (suppresses exceptions on both), sets both to `None`. The browser process stays alive; the next `get_page()` call creates a fresh context and page — equivalent to a logout. |
+| `close()` | Calls `clear_context()`, then closes `_browser` and stops `_pw`. Sets all internal references to `None`. Any subsequent call restarts the full chain from `_ensure_ready`. |
 
-Cleanup is explicit:
+**Lazy creation flow** for a typical `navigate()` call:
 
-- `close()` shuts down the browser and stops the Playwright driver.
-- Context-manager support (`__enter__` / `__exit__`) guarantees cleanup even if the calling code raises.
+1. `navigate()` calls `get_page()`.
+2. `get_page()` calls `_ensure_context()`.
+3. `_ensure_context()` calls `_ensure_ready()`.
+4. `_ensure_ready()` starts Playwright and launches the browser if needed.
+5. `_ensure_context()` creates the context if needed.
+6. `get_page()` creates the page if needed.
+7. `page.goto(url, wait_until="networkidle")` is called.
 
-## Surface area
+On subsequent calls to `navigate()` or any other page-dependent method, steps 3–6 are no-ops because `_pw`, `_browser`, `_context`, and `_page` are already set.
 
-| Method | Input | Output | Side effects |
-|---|---|---|---|
-| `get_html(url)` | URL string | Raw HTML string or error message | Launches browser if not ready; creates and destroys a page. |
-| `get_text(url)` | URL string | Visible text (no tags, no scripts) | Calls `get_html`, then parses with BeautifulSoup. |
-| `screenshot(url)` | URL string | `data:image/png;base64,<...>` URI or error message | Launches browser if not ready; creates and destroys a page. |
-| `close()` | None | None | Closes browser and driver if open. |
+## Public API
 
-## Error handling
+### Core methods (operate on the persistent page)
 
-`_ensure_ready()` returns an error string (never raises) for three failure modes:
+- **`navigate(url: str) → str`** — Navigates the persistent page to `url` and waits for network idle. Returns the final page URL (useful for detecting redirects).
+- **`click(selector: str) → str`** — Clicks the element matching `selector`, waits for network idle, returns the current URL.
+- **`fill_fields(data: dict, submit_selector: str = "") → str`** — Fills form fields using `page.fill()` for each key-value pair in `data` (key = CSS selector, value = text). If `submit_selector` is provided, clicks that element to submit the form; otherwise presses `Enter` on the last field. Waits for network idle and returns the resulting URL.
+- **`get_current_html() → str`** — Returns the full HTML of the persistent page via `page.content()`.
+- **`get_current_text() → str`** — Extracts visible text from the persistent page. Strips `<script>`, `<style>`, `<nav>`, `<footer>`, `<header>`, and `<aside>` elements via BeautifulSoup, then returns deduplicated non-empty lines.
+- **`screenshot_current() → str`** — Takes a full-page PNG screenshot and returns it as a `data:image/png;base64,...` data URI string.
 
-1. **Playwright not installed** -> `"Playwright is not installed. Please run: pip install playwright && playwright install chromium"`
-2. **Playwright startup failure** -> `"Failed to start Playwright: <exc>"`
-3. **Browser launch failure** -> formatted string with the browser type, exception, and installation hint.
+### Backward-compatibility wrappers (navigate then act)
 
-Public methods (`get_html`, `screenshot`) check for this error string and return it wrapped in a `[... failed: ...]` prefix instead of propagating an exception. This prevents the LangGraph `ToolNode` from crashing the graph when the browser is unavailable.
+These exist for legacy tool signatures that pass a URL with every call. Each navigates to the provided URL and then delegates to the corresponding `_current` method:
 
-## Text extraction (`get_text`)
+- **`screenshot(url: str) → str`** — `navigate(url)` → `screenshot_current()`
+- **`get_html(url: str) → str`** — `navigate(url)` → `get_current_html()`
+- **`get_text(url: str) → str`** — `navigate(url)` → `get_current_text()`
 
-After fetching HTML, `get_text` uses BeautifulSoup to:
+### Session management
 
-1. Remove `<script>`, `<style>`, `<nav>`, `<footer>`, `<header>`, and `<aside>` elements.
-2. Extract visible text with `soup.get_text(separator="\n")`.
-3. Strip each line and drop empty lines.
+- **`clear_context() → None`** — Destroys the current context and page. The page reference is garbage-collected; the next `get_page()` call creates a brand-new context and page. Use this to simulate logout or start a fresh session without restarting the browser.
+- **`close() → None`** — Full teardown: calls `clear_context()`, then closes the browser and stops the Playwright driver. Internal state is reset to `None`.
 
-The result is plain prose suitable for LLM consumption without markup noise.
+### Accessor
+
+- **`get_page()`** — Returns the current Playwright `Page` object, creating it if necessary. Raises `RuntimeError` with a descriptive message if Playwright is not installed or the browser fails to launch.
+
+### Context manager support
+
+`BrowserManager` implements `__enter__` and `__exit__`, so it can be used as a context manager. `__exit__` calls `close()` and returns `False` (does not suppress exceptions).
 
 ## Singleton
 
-`get_browser_manager()` holds a module-level `_browser_manager` reference. The first call constructs `BrowserManager()`; subsequent calls return the same instance. This avoids repeated Playwright startup cost across multiple tool calls in a single agent loop.
+```python
+_browser_manager: Optional[BrowserManager] = None
+
+def get_browser_manager() -> BrowserManager:
+    global _browser_manager
+    if _browser_manager is None:
+        _browser_manager = BrowserManager()
+    return _browser_manager
+```
+
+`get_browser_manager()` returns a module-level singleton. All tool calls within the same process share the same `BrowserManager` instance and therefore the same browser, context, and page. This is how session persistence works across tool invocations: each call to a MCP tool or agent action that imports and calls `get_browser_manager()` gets the same persistent browser state.
+
+## Error Handling
+
+`_ensure_ready()` and `_ensure_context()` follow a consistent error-reporting convention: they return `None` on success or a human-readable error **string** on failure. They do not raise exceptions.
+
+The boundary between error-return and exception-raise is `get_page()`: it calls the `_ensure_*` chain and, if any step returns an error string, raises `RuntimeError(err)`. This means all public methods that call `get_page()` (i.e., every public method except `clear_context()` and `close()`) can raise `RuntimeError`.
+
+`clear_context()` and `close()` suppress exceptions during cleanup — a partially-initialized browser or context that fails to close does not propagate to the caller. This ensures teardown is best-effort and never blocks shutdown.
+
+**Failure scenarios:**
+
+| Condition | Behavior |
+|---|---|
+| Playwright not installed (`sync_playwright is None`) | `_ensure_ready()` returns string; `get_page()` raises `RuntimeError` with install instructions |
+| `sync_playwright().start()` fails | `_ensure_ready()` returns `"Failed to start Playwright: …"`; propagates as `RuntimeError` |
+| Browser launch fails (e.g., missing browser binary) | `_ensure_ready()` returns string with browser name and install hint; propagates as `RuntimeError` |
+| Any `_page.close()` or `_context.close()` fails during `clear_context()` | Exception caught and silently discarded |
+| Any `browser.close()` or `pw.stop()` fails during `close()` | Exception caught and silently discarded |

@@ -5,10 +5,17 @@ from app.tools._url import _validate_url
 
 
 @tool
-def fetch_content(url: str) -> str:
-    """Fetch a URL and return its extracted readable text content (no HTML tags).
+def fetch_content(url: str = "") -> str:
+    """Fetch readable text content (no HTML tags) of a page. If a URL is given, navigates there first.
+    Otherwise returns the text of the current page.
 
     Use this when you want to read the actual page content, not raw markup.
     """
-    _validate_url(url)
-    return get_browser_manager().get_text(url)
+    mgr = get_browser_manager()
+    try:
+        if url:
+            _validate_url(url)
+            mgr.navigate(url)
+        return mgr.get_current_text()
+    except (RuntimeError, ValueError) as exc:
+        return f"[fetch_content failed: {exc}]"

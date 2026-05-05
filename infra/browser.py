@@ -10,12 +10,14 @@ except ImportError:
 
 
 class BrowserManager:
-    """Manages a headless Playwright browser (default: Chromium) for page interaction."""
+    """Manages a headless Playwright browser with a persistent page for stateful interaction."""
 
     def __init__(self, browser_type: str = "chromium"):
         self.browser_type = browser_type
         self._pw = None
         self._browser = None
+        self._context = None
+        self._page = None
 
     def _ensure_ready(self) -> Optional[str]:
         """Returns an error message if the browser cannot be used."""
@@ -44,46 +46,50 @@ class BrowserManager:
 
         return None
 
-    def screenshot(self, url: str) -> str:
-        """Return a full-page screenshot as a base64 PNG data URI."""
+    def _ensure_context(self) -> Optional[str]:
         err = self._ensure_ready()
         if err:
-            return f"[webpage_screenshot failed: {err}]"
+            return err
+        if self._context is None:
+            self._context = self._browser.new_context()
+        return None
 
-        page = self._browser.new_page()
-        try:
-            page.goto(url, wait_until="networkidle")
-            png_bytes = page.screenshot(full_page=True)
-        except Exception as exc:
-            return f"[webpage_screenshot failed: {exc}]"
-        finally:
-            page.close()
-
-        b64 = base64.b64encode(png_bytes).decode("utf-8")
-        return f"data:image/png;base64,{b64}"
-
-    def get_html(self, url: str) -> str:
-        """Return the raw HTML of a page."""
-        err = self._ensure_ready()
+    def get_page(self):
+        err = self._ensure_context()
         if err:
-            return f"[get_html failed: {err}]"
+            raise RuntimeError(err)
+        if self._page is None:
+            self._page = self._context.new_page()
+        return self._page
 
-        page = self._browser.new_page()
-        try:
-            page.goto(url, wait_until="networkidle")
-            html = page.content()
-        except Exception as exc:
-            return f"[get_html failed: {exc}]"
-        finally:
-            page.close()
-        return html
+    def navigate(self, url: str) -> str:
+        page = self.get_page()
+        page.goto(url, wait_until="networkidle")
+        return page.url
 
-    def get_text(self, url: str) -> str:
-        """Return visible text extracted from a page (no tags, no scripts)."""
-        html = self.get_html(url)
-        if html.startswith("[get_html failed:"):
-            return html
+    def click(self, selector: str) -> str:
+        page = self.get_page()
+        page.click(selector)
+        page.wait_for_load_state("networkidle")
+        return page.url
 
+    def fill_fields(self, data: dict, submit_selector: str = "") -> str:
+        page = self.get_page()
+        selectors = list(data.keys())
+        for sel in selectors:
+            page.fill(sel, data[sel])
+        if submit_selector:
+            page.click(submit_selector)
+        else:
+            page.press(selectors[-1], "Enter")
+        page.wait_for_load_state("networkidle")
+        return page.url
+
+    def get_current_html(self) -> str:
+        return self.get_page().content()
+
+    def get_current_text(self) -> str:
+        html = self.get_current_html()
         soup = BeautifulSoup(html, "html.parser")
         for tag in soup(["script", "style", "nav", "footer", "header", "aside"]):
             tag.decompose()
@@ -91,7 +97,55 @@ class BrowserManager:
         lines = (line.strip() for line in text.splitlines())
         return "\n".join(line for line in lines if line)
 
+    def screenshot_current(self) -> str:
+        page = self.get_page()
+        png_bytes = page.screenshot(full_page=True)
+        b64 = base64.b64encode(png_bytes).decode("utf-8")
+        return f"data:image/png;base64,{b64}"
+
+    def scroll_down(self, amount: int = 600) -> dict:
+        page = self.get_page()
+        current = page.evaluate("window.scrollY")
+        page.evaluate(f"window.scrollBy(0, {amount})")
+        new_y = page.evaluate("window.scrollY")
+        at_bottom = page.evaluate(
+            "window.scrollY + window.innerHeight >= document.body.scrollHeight - 10"
+        )
+        return {"scroll_y": new_y, "scrolled": new_y - current, "at_bottom": at_bottom}
+
+    def scroll_to_top(self) -> dict:
+        page = self.get_page()
+        page.evaluate("window.scrollTo(0, 0)")
+        return {"scroll_y": 0, "scrolled": "to_top", "at_bottom": False}
+
+    def clear_context(self) -> None:
+        if self._page:
+            try:
+                self._page.close()
+            except Exception:
+                pass
+            self._page = None
+        if self._context:
+            try:
+                self._context.close()
+            except Exception:
+                pass
+            self._context = None
+
+    def screenshot(self, url: str) -> str:
+        self.navigate(url)
+        return self.screenshot_current()
+
+    def get_html(self, url: str) -> str:
+        self.navigate(url)
+        return self.get_current_html()
+
+    def get_text(self, url: str) -> str:
+        self.navigate(url)
+        return self.get_current_text()
+
     def close(self) -> None:
+        self.clear_context()
         b, pw = self._browser, self._pw
         self._browser = None
         self._pw = None

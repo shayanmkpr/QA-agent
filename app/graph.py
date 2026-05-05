@@ -16,13 +16,18 @@ from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
 from app.qa_utils import check_resources, compress_image
-from app.tools import (  # , screenshot
+from app.tools import (
+    navigate,
     click_link,
     fetch_content,
     fetch_html,
     fill_form,
     webpage_screenshot,
     write_report,
+    clear_session,
+    scroll_down,
+    scroll_to_top,
+    compact_context,
 )
 from infra import storage
 from infra.config import get_llm
@@ -36,40 +41,90 @@ class AgentState(TypedDict):
     screenshot: str
     issues: list[dict]
     report_path: str
+    credentials: dict
 
 
-# LLM with tool binding for the agent loop.
-# Plain LLM (no tools) is used for vision comparison so it doesn't try to call tools.
 tools = [
+    navigate,
     click_link,
     fill_form,
     fetch_html,
     fetch_content,
     webpage_screenshot,
     write_report,
-]  # , screenshot
-tool_choice = os.getenv("TOOL_CHOICE") or None  # "any" for backends that reject "auto"
+    clear_session,
+    scroll_down,
+    scroll_to_top,
+    compact_context,
+]
+tool_choice = os.getenv("TOOL_CHOICE") or None
 llm = get_llm().bind_tools(tools, tool_choice=tool_choice)
 llm_plain = get_llm()
 
 
-def _system_prompt(mode: str) -> str:
+def _system_prompt(mode: str, credentials: dict) -> str:
+    creds_text = ""
+    if credentials:
+        creds_text = (
+            "Available credentials:\n"
+            + "\n".join(f"  - {k}: {json.dumps(v)}" for k, v in credentials.items())
+            + "\n\n"
+        )
+
+    scan_instructions = (
+        "Scanning & context management:\n"
+        "- When you need to find something on the page (a link, button, form, etc.), "
+        "first check the visible area: call webpage_screenshot() and/or fetch_content() "
+        "to see the current viewport.\n"
+        "- If you don't see what you need, use scroll_down() to move down the page. "
+        "Check again with screenshot/content. Repeat until you find it or reach "
+        "the bottom (scroll_down reports at_bottom=true).\n"
+        "- If you need to go back up, use scroll_to_top() then scroll_down() to "
+        "scan again.\n"
+        "- IMPORTANT: once you find what you were looking for, call compact_context(summary) "
+        "BEFORE clicking or interacting. This removes old screenshots and HTML dumps "
+        "from context to save tokens. The summary should describe what you found, "
+        "where it is, and what action you'll take next.\n"
+        "- Never keep multiple screenshots or HTML dumps in context. "
+        "Compact after each successful scan."
+    )
+
     if mode == "set_reference":
         return (
-            "You are a QA testing assistant. Capture a reference snapshot of the target page. "
-            "Fetch its raw HTML and take a full-page screenshot. Do exactly these two steps "
-            "and nothing more."
+            "You are a QA testing assistant with a persistent browser session. "
+            "Browser state (cookies, localStorage) survives across tool calls — "
+            "use navigate() first, then interact with the page.\n\n"
+            f"{creds_text}"
+            "Your goal: capture a reference snapshot of the target page.\n\n"
+            "Workflow:\n"
+            "1. Navigate to the target URL.\n"
+            "2. If credentials are available and the page requires authentication, "
+            "examine the page for a login link/button. If you don't see it in the "
+            "current view, scan the page by scrolling down until you find it. "
+            "Click it, find the login form, fill in email/password using credentials, "
+            "and submit. Verify authenticated content.\n"
+            "3. Fetch the raw HTML and take a full-page screenshot.\n"
+            f"{scan_instructions}"
+            "Do exactly what is needed — no more, no less."
         )
     return (
-        "You are a QA testing assistant. Fetch the current HTML and a full-page screenshot "
-        "of the target page so it can be compared against a saved reference. "
-        "Use the minimum number of tool calls needed. Do not fetch multiple things in parallel "
-        "unless necessary."
+        "You are a QA testing assistant with a persistent browser session. "
+        "Browser state (cookies, localStorage) survives across tool calls — "
+        "use navigate() first, then interact with the page.\n\n"
+        f"{creds_text}"
+        "Your goal: test the target page against a saved reference.\n\n"
+        "Workflow:\n"
+        "1. Navigate to the target URL.\n"
+        "2. If credentials are available, log in: examine the page for a login "
+        "link/button. If not visible, scan by scrolling until you find it. "
+        "Click it, find the form, fill credentials, submit, verify success.\n"
+        "3. Fetch the current HTML and a full-page screenshot for comparison.\n"
+        f"{scan_instructions}"
+        "Use the minimum number of tool calls needed."
     )
 
 
 def _extract_tool_results(messages: list[BaseMessage]) -> tuple[str, str]:
-    """Pull the latest HTML and screenshot from completed tool calls."""
     html = ""
     screenshot = ""
     for msg in messages:
@@ -89,7 +144,7 @@ def _extract_tool_results(messages: list[BaseMessage]) -> tuple[str, str]:
 def agent(state: AgentState) -> dict:
     if not state["messages"]:
         messages = [
-            SystemMessage(content=_system_prompt(state["mode"])),
+            SystemMessage(content=_system_prompt(state["mode"], state.get("credentials", {}))),
             HumanMessage(content=f"URL: {state['url']}"),
         ]
     else:
@@ -97,6 +152,43 @@ def agent(state: AgentState) -> dict:
 
     response = llm.invoke(messages)
     return {"messages": [response]}
+
+
+def compact_node(state: AgentState) -> dict:
+    """Trim old screenshots and verbose HTML from context, keeping only
+    the compact_context summary and recent essential messages."""
+    messages = state["messages"]
+    summary = ""
+    compact_idx = -1
+
+    # Find the compact_context ToolMessage
+    for i, msg in enumerate(messages):
+        if isinstance(msg, ToolMessage) and getattr(msg, "name", None) == "compact_context":
+            # Extract summary from the tool result
+            content = msg.content
+            if "Preserved summary:" in content:
+                summary = content.split("Preserved summary:", 1)[1].strip()
+            compact_idx = i
+            break
+
+    if compact_idx == -1:
+        return {"messages": []}
+
+    # Keep: system message + summary + messages after the compact_context call
+    trimmed = []
+    for msg in messages:
+        if isinstance(msg, SystemMessage):
+            trimmed.append(msg)
+            break
+
+    trimmed.append(HumanMessage(content=f"[Context compacted] {summary}"))
+    trimmed.append(AIMessage(content="Context compacted. Proceeding with the saved summary."))
+
+    # Keep messages that came after the compact_context result
+    for msg in messages[compact_idx + 1:]:
+        trimmed.append(msg)
+
+    return {"messages": trimmed}
 
 
 # TODO: add multi-page crawling support (depth > 1)
@@ -120,7 +212,6 @@ def _llm_compare(
     current_html: str,
     current_screenshot: str,
 ) -> list[dict]:
-    """Ask the LLM to visually compare current vs reference screenshots."""
     ref_screenshot = compress_image(ref.get("screenshot", ""))
     current_screenshot = compress_image(current_screenshot)
     prompt = (
@@ -164,11 +255,9 @@ def _llm_compare(
     try:
         response = llm_plain.invoke(messages)
     except Exception:
-        # Vision may not be supported by the configured model / provider — degrade gracefully.
         return []
 
     text = response.content.strip()
-    # Strip markdown code fences if present
     if text.startswith("```"):
         text = text.split("\n", 1)[1]
         text = text.rsplit("```", 1)[0].strip()
@@ -190,10 +279,8 @@ def _llm_compare(
 def analyze_node(state: AgentState) -> dict:
     html, screenshot = _extract_tool_results(state["messages"])
 
-    # Deterministic surface checks
     issues = check_resources(html, state["url"])
 
-    # Reference comparison
     reference = storage.load_reference(state["url"])
     if reference:
         llm_issues = _llm_compare(state["url"], reference, html, screenshot)
@@ -244,6 +331,17 @@ def route_after_agent(state: AgentState) -> str:
     return END
 
 
+def route_after_tools(state: AgentState) -> str:
+    """After tools execute, check if compact_context was called.
+    If so, route to compact_node to trim context before continuing."""
+    for msg in reversed(state["messages"]):
+        if isinstance(msg, ToolMessage):
+            if getattr(msg, "name", None) == "compact_context":
+                return "compact"
+            break
+    return "agent"
+
+
 # ---------------------------------------------------------------------------
 # Graph assembly
 # ---------------------------------------------------------------------------
@@ -252,6 +350,7 @@ builder = StateGraph(AgentState)
 
 builder.add_node("agent", agent)
 builder.add_node("tools", ToolNode(tools))
+builder.add_node("compact", compact_node)
 builder.add_node("save_reference", save_reference_node)
 builder.add_node("analyze", analyze_node)
 builder.add_node("report", report_node)
@@ -267,7 +366,15 @@ builder.add_conditional_edges(
         END: END,
     },
 )
-builder.add_edge("tools", "agent")
+builder.add_conditional_edges(
+    "tools",
+    route_after_tools,
+    {
+        "compact": "compact",
+        "agent": "agent",
+    },
+)
+builder.add_edge("compact", "agent")
 builder.add_edge("save_reference", END)
 builder.add_edge("analyze", "report")
 builder.add_edge("report", END)

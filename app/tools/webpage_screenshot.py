@@ -6,15 +6,18 @@ from app.qa_utils import compress_image
 
 
 @tool
-def webpage_screenshot(url: str) -> str:
-    """Open a URL in a headless browser and return a full-page screenshot as a base64-encoded PNG data URI.
-
-    Use this when you need a complete screenshot of a specific webpage.
-    The returned format matches the screen screenshot tool (data:image/png;base64,...)
-    so it can be consumed by vision-capable models the same way.
+def webpage_screenshot(url: str = "") -> str:
+    """Take a full-page screenshot. If a URL is given, navigates there first.
+    Otherwise screenshots the current page. Returns a base64-encoded PNG data URI.
     """
-    _validate_url(url)
-    result = get_browser_manager().screenshot(url)
-    if result.startswith("data:image"):
-        result = compress_image(result)
-    return result
+    mgr = get_browser_manager()
+    try:
+        if url:
+            _validate_url(url)
+            mgr.navigate(url)
+        result = mgr.screenshot_current()
+        if result.startswith("data:image"):
+            result = compress_image(result)
+        return result
+    except (RuntimeError, ValueError) as exc:
+        return f"[webpage_screenshot failed: {exc}]"
