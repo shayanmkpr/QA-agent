@@ -11,14 +11,16 @@ from langchain_core.messages import (
     SystemMessage,
     ToolMessage,
 )
-from langgraph.graph import StateGraph, END
+from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode
 
 from app.qa_utils import check_resources, compress_image
 from app.tools import (  # , screenshot
+    click_link,
     fetch_content,
     fetch_html,
+    fill_form,
     webpage_screenshot,
     write_report,
 )
@@ -38,7 +40,14 @@ class AgentState(TypedDict):
 
 # LLM with tool binding for the agent loop.
 # Plain LLM (no tools) is used for vision comparison so it doesn't try to call tools.
-tools = [fetch_html, fetch_content, webpage_screenshot, write_report]  # , screenshot
+tools = [
+    click_link,
+    fill_form,
+    fetch_html,
+    fetch_content,
+    webpage_screenshot,
+    write_report,
+]  # , screenshot
 tool_choice = os.getenv("TOOL_CHOICE") or None  # "any" for backends that reject "auto"
 llm = get_llm().bind_tools(tools, tool_choice=tool_choice)
 llm_plain = get_llm()
