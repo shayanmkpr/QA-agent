@@ -1,14 +1,22 @@
-# Adding a New Tool to the LangGraph Agent
+# Adding a New Tool
 
-A LangChain tool is a typed Python function, decorated with `@tool`, that the LLM can invoke during the agent loop by emitting a `tool_call`. The `ToolNode` receives the call, executes the function, appends a `ToolMessage` to `AgentState.messages`, and returns control to the LLM node.
+A LangChain tool is a typed Python function decorated with `@tool`. The LLM can invoke it by emitting a `tool_call`. The `tools_node` in the graph (or the inline executor in the chat loop) executes the function and appends a `ToolMessage` to the conversation.
 
+## Where tools are wired
 
+There are **two tool sets** in the project:
 
-## Context
+| Tool set | Location | Used by | Includes navigate? |
+|---|---|---|---|
+| `_interaction_tools` | `app/graph.py:52` | Graph agent (LLM node) | No |
+| `_tools` | `main.py:26` | Chat loop (interactive) | Yes |
 
-- **Upstream caller**: `main.py` invokes `graph.invoke({"url": url})`.
-- **Graph wiring**: `app/graph.py` defines `AgentState`, assembles the `tools` list, binds it to the LLM via `get_llm().bind_tools(tools)`, and wires a `ToolNode`.
-- **Downstream**: The `ToolNode` maps `tool_call["name"]` to the registered function by name, passing `tool_call["args"]` as keyword arguments.
+The graph agent excludes `navigate` because navigation is handled by deterministic nodes (`navigate_node` → `capture_node`).
+
+To add a new tool:
+- Add it to `_interaction_tools` in `app/graph.py`
+- Add it to `_tools` in `main.py`
+- Export it from `app/tools/__init__.py`
 
 ## Step-by-Step Guide
 
@@ -36,17 +44,31 @@ The docstring is embedded into the JSON schema sent to the LLM as the tool descr
 
 Ambiguous or terse docstrings cause the LLM to skip the tool or hallucinate arguments.
 
-### Step 3: Register in `app/graph.py`
+### Step 3: Register the tool
 
-Import the function and append it to the `tools` list:
+**In `app/tools/__init__.py`**: import and add to `__all__`:
 
 ```python
-from app.tools import fetch_html, screenshot, my_tool
+from app.tools.my_tool import my_tool
 
-tools = [fetch_html, screenshot, my_tool]
+__all__ = [..., "my_tool"]
 ```
 
-`bind_tools(tools)` and `ToolNode(tools)` both derive their behavior from this list. No other graph wiring is required.
+**In `app/graph.py`**: import and add to `_interaction_tools`:
+```python
+from app.tools import my_tool
+
+_interaction_tools = [..., my_tool]
+```
+
+**In `main.py`**: import and add to `_tools`:
+```python
+from app.tools import my_tool
+
+_tools = [..., my_tool]
+```
+
+If the tool should NOT be available to the graph agent (e.g., `navigate`), only add it to `main.py`'s `_tools`.
 
 ### Step 4: Add dependencies to `requirements.txt`
 
@@ -104,10 +126,17 @@ def calculate(expression: str) -> str:
 ```
 
 ```python
-# app/graph.py
-from app.tools import fetch_html, screenshot, calculate
+# In app/tools/__init__.py:
+from app.tools.calculate import calculate
+# add "calculate" to __all__
 
-tools = [fetch_html, screenshot, calculate]
+# In app/graph.py:
+from app.tools import calculate
+_interaction_tools = [..., calculate]
+
+# In main.py:
+from app.tools import calculate
+_tools = [..., calculate]
 ```
 
 ## Example: File Reader Tool
@@ -135,9 +164,9 @@ def read_file(path: str) -> str:
 
 Filesystem access should always resolve the real path and enforce an allow-list root to prevent traversal.
 
-## URL validation for HTTP-fetching tools
+## URL validation
 
-Any tool that fetches or screenshots a remote URL must guard against SSRF before delegating to the browser layer. Use `app.tools._url._validate_url` at the top of the tool function:
+If your tool accepts a URL, validate it with `_validate_url` before use:
 
 ```python
 from app.tools._url import _validate_url
@@ -145,16 +174,10 @@ from app.tools._url import _validate_url
 @tool
 def my_fetch_tool(url: str) -> str:
     _validate_url(url)
-    return get_browser_manager().get_html(url)
+    return get_browser_manager().navigate(url)
 ```
 
-`_validate_url` enforces three invariants:
-
-1. **Scheme restriction** — Only `http` and `https` are permitted.
-2. **Loopback block** — Hostnames such as `localhost`, `127.0.0.1`, `::1`, and `0.0.0.0` are rejected.
-3. **IP range block** — IPv4/IPv6 addresses in private, loopback, reserved, or unspecified ranges are rejected.
-
-If validation fails, a `ValueError` is raised. Let it propagate so the graph-level error policy surfaces it to the LLM.
+`_validate_url` blocks non-HTTP(S) schemes, localhost, loopback, and private IP ranges.
 
 ## How the LLM Decides to Call a Tool
 

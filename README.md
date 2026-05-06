@@ -1,6 +1,6 @@
 # QA Agent
 
-A LangGraph agent that browses webpages, captures reference snapshots, and runs visual + deterministic QA checks — powered by a headless browser and a vision-capable LLM.
+A production-ready AI agent that browses websites, captures reference snapshots, and runs visual + deterministic QA checks using a headless browser and a vision-capable LLM.
 
 ## Quick Start
 
@@ -10,7 +10,7 @@ cp .env.example .env   # add your API keys
 python main.py --url https://example.com
 ```
 
-The agent auto-detects whether a reference snapshot exists. If not, it captures one first. If one exists, it offers to test against it. After testing, a chat loop starts — ask questions, inspect pages, and the agent uses its browser tools to investigate.
+The agent auto-detects whether a reference snapshot exists. If not, it captures one. If yes, it offers to test against it. After testing, an interactive chat loop starts — ask questions, inspect pages, click things, fill forms, and the agent uses its browser to investigate.
 
 ## Modes
 
@@ -20,120 +20,154 @@ The agent auto-detects whether a reference snapshot exists. If not, it captures 
 | `python main.py --set-reference --url <url>` | Force capture a new reference snapshot |
 | `python main.py --test --url <url>` | Run QA test against saved reference |
 
-## How the Agent Loop Works
+### Scenario Mode (NEW)
 
-```
-                     ┌──────────────────────┐
-                     │                      │
-                     ▼                      │
-              ┌───────────┐                 │
-              │   AGENT   │                 │
-              │  (think)  │                 │
-              └─────┬─────┘                 │
-                    │                       │
-                    │ LLM outputs           │
-                    │ tool_calls?           │
-                    │                       │
-            ┌───────┴───────┐               │
-            │               │               │
-           YES              NO              │
-            │               │               │
-            ▼               ▼               │
-     ┌──────────┐   ┌──────────────┐        │
-     │  TOOLS   │   │ save_ref /   │        │
-     │  (act)   │   │ analyze /    │──▶ END │
-     └────┬─────┘   │ END          │        │
-          │         └──────────────┘        │
-          │                                 │
-          │ last tool was                   │
-          │ compact_context?                │
-          │                                 │
-    ┌─────┴─────┐                           │
-    │           │                           │
-   YES         NO                           │
-    │           │                           │
-    ▼           └───────────────────────────┘
- ┌──────────┐
- │ COMPACT  │
- │ (trim)   │──▶ AGENT
- └──────────┘
+Run all QA scenarios from a markdown file. The agent parses the scenarios, executes each one using the LLM + browser, and writes a per-scenario pass/fail report.
+
+```bash
+python main.py --scenarios --url https://app.example.com
+python main.py --scenarios --scenarios-file custom_scenarios.md --url https://app.example.com
 ```
 
-### Step by step
+**How it works:**
+1. Parses `docs/scenarios.md` into structured scenarios (26 by default)
+2. Manages auth state — clears session for auth-testing scenarios, logs in for feature scenarios
+3. Runs each scenario through an LLM agent loop (up to 25 rounds each)
+4. The LLM follows steps, interacts with the page, and issues a verdict: `VERDICT: PASS` or `VERDICT: FAIL`
+5. Writes results to `qa_scenarios_report.csv`
 
-**1. Think** — The LLM receives a system prompt (describing the goal and available tools) plus the conversation history. It decides what to do next and emits either a tool call or a final answer.
+**Report columns:** Scenario ID, Section, Title, Status, Duration (s), Steps, Findings, Error
 
-**2. Act** — LangGraph's `ToolNode` executes whatever the LLM requested: navigate, scroll, take a screenshot, fetch HTML, click a link, fill a form, clear session, compact context, or write a report.
+| Status | Meaning |
+|---|---|
+| `PASS` | All expected outcomes met |
+| `FAIL` | One or more expected outcomes not met |
+| `ERROR` | Scenario could not be executed (LLM error, login failure, timeout) |
+| `SKIP` | Scenario was skipped |
 
-**3. Scan & scroll** — When the agent needs to locate an element on a long page, it takes a screenshot of the current viewport. If the target isn't visible, it calls `scroll_down(600)` and checks again. This repeats until the target is found or the page bottom is reached.
+**Scenarios file format** (`docs/scenarios.md`):
+```markdown
+## 1. Section Name
 
-**4. Compact** — Once the target is found, the agent calls `compact_context(summary)` to flush all previous screenshots and HTML dumps from the context window. Only the system prompt and a human-readable summary remain. This keeps token usage low across an arbitrarily long browsing session.
+### Scenario 1: Title
 
-**5. Repeat** — With a clean context, the agent clicks, fills forms, navigates, or continues scanning. The loop continues until the agent decides the task is complete.
+- Step one
+- Step two
+
+**Expected:**
+- Expected outcome one
+- Expected outcome two
+```
+
+Scenarios 3-5 are treated as auth scenarios (start with clean session). Scenarios 6+ require login (auto login setup before execution).
+
+## How It Works
+
+### Graph flow (automated test)
+
+```
+navigate ──▶ capture ──▶ agent ──▶ tools ──▶ agent ──▶ analyze ──▶ report
+  (auto)      (auto)     (LLM)     (exec)    (LLM)    (checks)    (CSV)
+                              \______________/
+                              loop: click, fill,
+                              scroll, re-capture
+```
+
+1. **navigate** — Deterministic: opens the URL in Playwright. No LLM involved.
+2. **capture** — Deterministic: fetches full HTML (capped at 100K chars) and takes a full-page screenshot. No LLM involved.
+3. **agent** — LLM receives the HTML + screenshot. Decides: is login needed? Any interactions? The agent does NOT have a `navigate` tool, so it can never loop on navigation.
+4. **tools** — Executes whatever the LLM requested (click, fill form, scroll, re-capture, compact, etc.). Results feed back to the agent.
+5. **compact** — When the agent calls `compact_context(summary)`, old screenshots and HTML are stripped from context — only the summary and recent messages remain. This keeps the context window small across many interactions.
+6. **analyze** — Runs deterministic checks (broken links, images, scripts, stylesheets) + LLM-powered visual comparison against the reference snapshot.
+7. **report** — Writes all issues to `qa_report.csv`.
+
+### Chat flow (interactive)
+
+After the test, a chat loop starts. You type commands in natural language. The agent has all browser tools including `navigate` (for when you say "go to X"). It also has:
+
+- **Auto-compaction**: monitors context token count. When approaching ~100K tokens, it force-compacts to prevent API errors.
+- **Error recovery**: if the LLM call fails (e.g. context overflow), it auto-compacts harder and retries.
+
+### The Scan → Compact → Act pattern
+
+1. **Scan** — `webpage_screenshot()` or `fetch_content()` to see the current viewport.
+2. **Scroll if needed** — `scroll_down(600)` and re-scan until the target is found or `at_bottom` is true.
+3. **Compact** — `compact_context("Found login button in header. Next: click it.")` — strips all previous screenshots and HTML from context.
+4. **Act** — Click, fill, or interact with the target.
+
+This pattern means the agent can browse arbitrarily long pages without exhausting the context window.
+
+## Tools
+
+| Tool | Signature | Description |
+|---|---|---|
+| `navigate` | `(url: str)` | Navigate browser to a URL (chat mode only) |
+| `click_link` | `(selector: str, text: str = "")` | Click an element. Supports CSS, `text=`, `:has-text()`. Optional `text` param matches by visible text. |
+| `fill_form` | `(fields: str, submit_selector: str = "")` | Fill form fields (JSON mapping selectors → values) and optionally submit |
+| `fetch_html` | `()` | Get raw HTML of current page (capped at 100K chars) |
+| `fetch_content` | `()` | Get visible text of current page (scripts/styles/nav stripped) |
+| `webpage_screenshot` | `()` | Full-page PNG screenshot of current page (base64, compressed) |
+| `scroll_down` | `(amount: int = 600)` | Scroll down, returns `{scroll_y, scrolled, at_bottom}` |
+| `scroll_to_top` | `()` | Scroll back to top of page |
+| `clear_session` | `()` | Wipe cookies/storage, close page (simulates logout) |
+| `compact_context` | `(summary: str)` | Trim old screenshots/HTML from context, keep only summary |
+| `write_report` | `(issues: str)` | Write CSV QA report from JSON issue array |
+
+### Selector guide
+
+Valid Playwright selectors for `click_link` and `fill_form`:
+
+| Type | Example |
+|---|---|
+| CSS tag | `button`, `a`, `input` |
+| CSS class | `.btn-primary`, `.nav-link` |
+| CSS ID | `#login-button` |
+| CSS attribute | `a[href="/login"]`, `input[name="email"]` |
+| Text match | `text=Login`, `text=Sign In` |
+| Has text | `button:has-text("Get Started")` |
+| ARIA | `[aria-label="Close"]` |
+
+**Do NOT use jQuery selectors** — `:contains()`, `:visible`, `:hidden` are NOT supported.
 
 ## Project Layout
 
 ```
-├── main.py              CLI entry point + interactive chat loop
-├── app/
-│   ├── graph.py         LangGraph StateGraph: 6 nodes, 2 conditional edges
-│   ├── qa_utils.py      Deterministic checks (broken links, images, assets)
-│   └── tools/           LangChain @tool functions (browser + utility tools)
-├── infra/
-│   ├── browser.py       Playwright headless browser (singleton, persistent session)
-│   ├── config.py        LLM provider factory (OpenAI / OpenRouter)
-│   ├── storage.py       Reference snapshot persistence (JSON on disk)
-│   ├── credentials.py   Credential store (data/credentials.json)
-│   └── validate.py      Startup environment checks
-└── docs/                Architecture, tool references, test scenarios
+main.py                 CLI entry point + interactive chat loop
+app/
+├── graph.py            LangGraph StateGraph: 8 nodes, 2 conditional edges
+├── qa_utils.py         Deterministic checks (broken links, images, assets, scripts)
+└── tools/              LangChain @tool functions
+    ├── navigate.py     Browser navigation
+    ├── click_link.py   Click elements (CSS + text-based)
+    ├── fill_form.py    Fill and submit forms
+    ├── fetch_html.py   Get raw HTML
+    ├── fetch_content.py Get visible text
+    ├── webpage_screenshot.py Full-page screenshot
+    ├── scroll.py       Scroll down / scroll to top
+    ├── screenshot.py   Desktop screenshot (PIL ImageGrab)
+    ├── compact_context.py Context compaction signal
+    ├── write_report.py Write CSV report
+    ├── clear_session.py Clear browser session
+    └── _url.py         URL validation (SSRF protection)
+infra/
+├── browser.py          Playwright headless Chromium singleton
+├── config.py           LLM provider factory (OpenAI / OpenRouter)
+├── storage.py          Reference snapshot persistence (JSON on disk)
+├── credentials.py      Credential store (data/credentials.json)
+├── validate.py         Startup environment checks
+└── logging.py          Verbose logging (QA_VERBOSE env var)
 ```
 
-## Tools
+## Configuration
 
-| Tool | Description |
-|---|---|
-| `navigate(url)` | Navigate browser to URL |
-| `click_link(selector)` | Click a CSS selector |
-| `fill_form(fields, submit)` | Fill form fields and optionally submit |
-| `fetch_html(url)` | Get raw HTML |
-| `fetch_content(url)` | Get visible text (no tags, no nav/footer) |
-| `webpage_screenshot(url)` | Full-page PNG screenshot (base64) |
-| `scroll_down(amount)` | Scroll down N pixels, returns position + at_bottom |
-| `scroll_to_top()` | Scroll back to top |
-| `clear_session()` | Wipe cookies/storage, close page (simulates logout) |
-| `compact_context(summary)` | Trim old screenshots/HTML from context |
-| `write_report(issues)` | Write CSV QA report from JSON issue array |
+Set in `.env`:
 
-## Documents
-
-- [Architecture](docs/ARCHITECTURE.md) — full component map, data flow, key design decisions
-- [BrowserManager](docs/infra-browser.md) — how the persistent browser works
-- [Test Scenarios](docs/scenarios.md) — 26 real QA scenarios for the target application
-- [Adding New Tools](docs/adding-new-tools.md) — developer guide for extending the agent
-- Tool references: [fetch_content](docs/fetch-content-tool.md), [screenshot](docs/screenshot-tool.md), [webpage_screenshot](docs/webpage-screenshot-tool.md)
-
-## TODO
-
-### Next up
-- Login and signup flows
-- Account balance / plan selection
-- Hover interactions for CSS animations
-- Click a link then compare with corresponding reference
-
-### Discovery
-- Track agent flow inside browser (visual replay)
-- Detect and validate CSS animations
-- Performance / load-time checks
-- Browser console error capture
-
-### Roadmap (Claude Suggestions)
-1. **Test definition language** — Declarative YAML/JSON scenarios (navigate → fill → assert → screenshot)
-2. **Assertion engine** — Deterministic text, attribute, existence, count, network, and console assertions
-3. **Visual regression** — Pixel-level diffing; LLM only for classifying diffs, not detecting them
-4. **Multi-scenario orchestration** — Parallel/sequential scenarios with per-scenario session isolation
-5. **Structured reporting** — HTML reports with inline screenshots, JUnit XML for CI pipelines
-6. **Test data management** — Fixture system with per-environment configs
-7. **Browser robustness** — Wait strategies, iframe support, alerts, file upload, network interception
-8. **Self-healing selectors** — Fallback strategies (text, aria labels, parent structure) when selectors break
-9. **CI/CD integration** — Exit codes, env var overrides, artifact output
-10. **Session & state management** — Multi-user scenarios, cookie/localStorage save/restore
+| Variable | Default | Description |
+|---|---|---|
+| `LLM_PROVIDER` | `openrouter` | `openai` or `openrouter` |
+| `OPENROUTER_API_KEY` | — | OpenRouter API key |
+| `OPENROUTER_MODEL` | `openai/gpt-4o-mini` | Model (OpenRouter) |
+| `OPENAI_API_KEY` | — | OpenAI API key |
+| `OPENAI_MODEL` | `gpt-4o-mini` | Model (OpenAI) |
+| `QA_VERBOSE` | `true` | Set to `false` to silence tool logs |
+| `INCLUDE_HTML_IN_VLM` | `true` | Include HTML length in visual comparison |

@@ -1,59 +1,42 @@
 # webpage_screenshot tool
 
-`webpage_screenshot` opens a URL in a headless browser and returns a full-page screenshot encoded as a base64 PNG data URI.
+Takes a full-page screenshot of the **current** browser page and returns it as a compressed base64 PNG data URI.
 
-## Context
+## Signature
 
-- **Upstream caller**: LangGraph `ToolNode` (`app/graph.py`) invokes this when the LLM emits a `tool_call` named `webpage_screenshot`.
-- **Downstream dependency**: `infra.browser.BrowserManager.screenshot(url)`.
-- **Runtime environment**: Same process as the agent graph. Requires Playwright and Chromium.
+```python
+@tool
+def webpage_screenshot() -> str:
+```
+
+No parameters. Always screenshots the page currently loaded in the browser. Does NOT navigate — call `navigate(url)` first if you need to go to a URL.
 
 ## Mechanics
 
-The tool delegates to the browser manager's screenshot helper:
+Delegates to `BrowserManager.screenshot_current()` then passes the result through `compress_image()`:
 
 ```python
-from langchain_core.tools import tool
 from infra.browser import get_browser_manager
+from app.qa_utils import compress_image
 
 @tool
-def webpage_screenshot(url: str) -> str:
-    """Open a URL in a headless browser and return a full-page screenshot as a base64-encoded PNG data URI.
-
-    Use this when you need a complete screenshot of a specific webpage.
-    The returned format matches the screen screenshot tool (data:image/png;base64,...)
-    so it can be consumed by vision-capable models the same way.
-    """
-    return get_browser_manager().screenshot(url)
+def webpage_screenshot() -> str:
+    result = get_browser_manager().screenshot_current()
+    if result.startswith("data:image"):
+        result = compress_image(result)
+    return result
 ```
 
-## URL validation / SSRF protection
-
-Before delegating to `BrowserManager`, the tool calls `_validate_url(url)` from `app.tools._url`:
-
-```python
-from app.tools._url import _validate_url
-
-@tool
-def webpage_screenshot(url: str) -> str:
-    _validate_url(url)
-    return get_browser_manager().screenshot(url)
-```
-
-`_validate_url` rejects non-HTTP(S) schemes, localhost/loopback hosts, and private/reserved IP ranges. If validation fails it raises `ValueError`, which `ToolNode` surfaces to the LLM as an error message without crashing the graph.
-
-## Error handling
-
-If Playwright is missing, startup fails, or navigation throws, `_ensure_ready()` or the page interaction returns an error string wrapped in `[webpage_screenshot failed: ...]`. This string is passed back as the tool result, keeping the graph stable.
+`screenshot_current()` takes a `full_page=True` PNG screenshot and encodes it as a base64 data URI. `compress_image()` resizes it so the longest edge is ≤1024px (reducing ~2-3MB base64 to ~120KB).
 
 ## Return format
 
-- **Success**: `data:image/png;base64,<base64-encoded-png-bytes>`
-- **Failure**: A single string describing the error
+- **Success**: `data:image/png;base64,<compressed-png-bytes>`
+- **Failure**: `[webpage_screenshot failed: <reason>]`
 
-## Distinction from screen screenshot
+## Distinction from desktop screenshot
 
-- `screenshot` (`app/tools/screenshot.py`) captures the user's local desktop via `PIL.ImageGrab`.
-- `webpage_screenshot` captures a remote webpage via Playwright.
+- `screenshot` (`app/tools/screenshot.py`) captures the user's **local desktop** via `PIL.ImageGrab`.
+- `webpage_screenshot` captures the **browser page** via Playwright.
 
-Both return the same `data:image/png;base64,...` format, so vision-capable models consume them identically.
+Both return the same `data:image/png;base64,...` format.

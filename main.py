@@ -11,6 +11,12 @@ from infra.browser import get_browser_manager
 from infra.credentials import get_credential_store
 from infra.logging import _log, _trunc
 from app.graph import graph
+from app.scenarios.runner import (
+    run_all_scenarios,
+    write_scenario_report,
+    print_summary,
+)
+from app.scenarios.parser import parse_scenarios
 from app.tools import (
     navigate,
     click_link,
@@ -108,7 +114,24 @@ def main():
     parser.add_argument("--test", action="store_true",
                         help="Run QA test against saved reference")
     parser.add_argument("--url", type=str, help="Target URL")
+    parser.add_argument("--scenarios", action="store_true",
+                        help="Run all QA scenarios from docs/scenarios.md")
+    parser.add_argument("--scenarios-file", type=str, default="docs/scenarios.md",
+                        help="Path to scenarios markdown file")
     args = parser.parse_args()
+
+    if args.scenarios:
+        url = args.url or input("URL: ").strip()
+        credentials = get_credential_store().all()
+        _log("[main]", "initialising browser for scenario run...")
+        get_browser_manager().get_page()
+        _log("[main]", f"parsing scenarios from {args.scenarios_file}...")
+        scenarios = parse_scenarios(args.scenarios_file)
+        _log("[main]", f"parsed {len(scenarios)} scenarios")
+        results = run_all_scenarios(scenarios, credentials, url)
+        report_path = write_scenario_report(results)
+        print_summary(results)
+        return
 
     url = args.url or input("URL: ").strip()
 
