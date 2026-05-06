@@ -4,19 +4,14 @@ A LangChain tool is a typed Python function decorated with `@tool`. The LLM can 
 
 ## Where tools are wired
 
-There are **two tool sets** in the project:
+All tools are registered in a single place:
 
-| Tool set | Location | Used by | Includes navigate? |
-|---|---|---|---|
-| `_interaction_tools` | `app/graph.py:52` | Graph agent (LLM node) | No |
-| `_tools` | `main.py:26` | Chat loop (interactive) | Yes |
+| Tool set | Location | Used by |
+|---|---|---|
+| `_TOOLS` | `main.py:78` | Interactive REPL agent |
 
-The graph agent excludes `navigate` because navigation is handled by deterministic nodes (`navigate_node` → `capture_node`).
-
-To add a new tool:
-- Add it to `_interaction_tools` in `app/graph.py`
-- Add it to `_tools` in `main.py`
-- Export it from `app/tools/__init__.py`
+The REPL agent binds **all** tools (including `navigate`) since every
+interaction is user-driven.
 
 ## Step-by-Step Guide
 
@@ -54,21 +49,15 @@ from app.tools.my_tool import my_tool
 __all__ = [..., "my_tool"]
 ```
 
-**In `app/graph.py`**: import and add to `_interaction_tools`:
+**In `main.py`**: import and add to `_TOOLS`:
+
 ```python
 from app.tools import my_tool
 
-_interaction_tools = [..., my_tool]
+_TOOLS = [..., my_tool]
 ```
 
-**In `main.py`**: import and add to `_tools`:
-```python
-from app.tools import my_tool
-
-_tools = [..., my_tool]
-```
-
-If the tool should NOT be available to the graph agent (e.g., `navigate`), only add it to `main.py`'s `_tools`.
+Also add it to the scenario runner's tool set if applicable:
 
 ### Step 4: Add dependencies to `requirements.txt`
 
@@ -130,13 +119,9 @@ def calculate(expression: str) -> str:
 from app.tools.calculate import calculate
 # add "calculate" to __all__
 
-# In app/graph.py:
-from app.tools import calculate
-_interaction_tools = [..., calculate]
-
 # In main.py:
 from app.tools import calculate
-_tools = [..., calculate]
+_TOOLS = [..., calculate]
 ```
 
 ## Example: File Reader Tool
@@ -189,19 +174,26 @@ During `llm.invoke(state["messages"])`, the model receives a system prompt plus 
 
 If multiple tools are available, the LLM relies entirely on the docstring to disambiguate. Names like `read_file` are less important than the description text. If the LLM fails to call the correct tool, rewrite the docstring to make the trigger condition explicit.
 
-## Extending AgentState
+## Prompt templates
 
-If a tool needs to persist structured data beyond the message list (e.g., an extracted entity or an intermediate file path), add a field to `AgentState`:
+All agent prompts live in `prompts/templates.py` as pure functions that take
+keyword parameters.  No prompt text is hardcoded in consumer modules.
 
 ```python
-class AgentState(TypedDict):
-    messages: Annotated[list[BaseMessage], add_messages]
-    url: str
-    html: str
-    extracted_data: str
+from prompts.templates import qa_agent_system
+
+system = qa_agent_system(credentials_display="{...}")
 ```
 
-Update the node functions to read or write that field. `ToolNode` only mutates `messages`; any other state updates must be done by a custom node or by having the `agent` node branch based on `ToolMessage` content.
+To override a prompt, store it in the database:
+
+```python
+from infra.db import get_db
+
+get_db().set_prompt("system", "You are a custom QA agent...")
+```
+
+The agent will prefer the DB-stored template over the code default.
 
 ## Testing Tools Independently
 

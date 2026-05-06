@@ -1,21 +1,18 @@
 import argparse
 import json
-import time
+from pathlib import Path
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from langchain_core.tools import tool as langchain_tool
 
 from infra.validate import validate_all
-from infra import storage
 from infra.config import get_llm
 from infra.browser import get_browser_manager
 from infra.credentials import get_credential_store
+from infra.db import get_db
 from infra.logging import _log, _trunc
-from app.graph import graph
-from app.scenarios.runner import (
-    run_all_scenarios,
-    write_scenario_report,
-    print_summary,
-)
+from prompts.templates import qa_agent_system
+from app.scenarios.runner import run_all_scenarios, write_scenario_report, print_summary
 from app.scenarios.parser import parse_scenarios
 from app.tools import (
     navigate,
@@ -29,26 +26,73 @@ from app.tools import (
     scroll_down,
     scroll_to_top,
     compact_context,
+    check_console_errors,
+    check_network,
+    hover,
 )
 
-_tools = [
-    navigate,
-    click_link,
-    fill_form,
-    fetch_html,
-    fetch_content,
-    webpage_screenshot,
-    write_report,
-    clear_session,
-    scroll_down,
-    scroll_to_top,
-    compact_context,
-]
-_tool_map = {t.name: t for t in _tools}
+_MAX_ROUNDS_PER_TURN = 25
+_MAX_TOKENS_BEFORE_COMPACT = 100_000
+_DEFAULT_SCENARIOS_FILE = "docs/scenarios.md"
 
+# ---------------------------------------------------------------------------
+# Run-scenarios tool — defined here to avoid circular import with runner
+# ---------------------------------------------------------------------------
+
+@langchain_tool
+def run_scenarios(scenarios_file: str = _DEFAULT_SCENARIOS_FILE, url: str = "") -> str:
+    """Run all QA scenarios from a markdown file against a target URL.
+
+    Call this when the user asks to run test scenarios (e.g. "run all scenarios
+    on https://example.com"). Parses the scenarios file, executes each one
+    sequentially against the given URL, and writes a CSV report.
+
+    Parameters:
+    - scenarios_file: Path to the markdown file (default: docs/scenarios.md).
+    - url: The base URL to test. Required.
+    """
+    if not url:
+        return "Error: 'url' parameter is required — provide the base URL to test."
+    file_path = Path(scenarios_file)
+    if not file_path.exists():
+        return f"Error: scenarios file not found at '{scenarios_file}'."
+    scenarios = parse_scenarios(str(file_path))
+    if not scenarios:
+        return "Error: no scenarios parsed from the file."
+    credentials = get_credential_store().all()
+    results = run_all_scenarios(scenarios, credentials, url)
+    report_path = write_scenario_report(results)
+    print_summary(results)
+    pass_count = sum(1 for r in results if r.status == "PASS")
+    fail_count = sum(1 for r in results if r.status == "FAIL")
+    error_count = sum(1 for r in results if r.status == "ERROR")
+    return (
+        f"Scenario run complete on {url}. "
+        f"{pass_count} passed, {fail_count} failed, {error_count} errored "
+        f"out of {len(results)} total. Full report: {report_path}."
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tool registry
+# ---------------------------------------------------------------------------
+
+_TOOLS = [
+    navigate, click_link, fill_form, hover,
+    fetch_html, fetch_content, webpage_screenshot,
+    scroll_down, scroll_to_top,
+    check_console_errors, check_network,
+    write_report, clear_session, compact_context,
+    run_scenarios,
+]
+_TOOL_MAP = {t.name: t for t in _TOOLS}
+
+
+# ---------------------------------------------------------------------------
+# Context compaction
+# ---------------------------------------------------------------------------
 
 def _estimate_tokens(messages: list) -> int:
-    """Rough token estimate: ~4 chars per token."""
     total = 0
     for msg in messages:
         content = msg.content
@@ -61,262 +105,168 @@ def _estimate_tokens(messages: list) -> int:
     return total
 
 
-def _auto_compact(history: list, max_tokens: int = 100_000) -> list:
-    """Force context compaction when approaching the token limit."""
-    estimated = _estimate_tokens(history)
+def _auto_compact(messages: list, max_tokens: int = _MAX_TOKENS_BEFORE_COMPACT) -> list:
+    estimated = _estimate_tokens(messages)
     if estimated < max_tokens:
-        return history
+        return messages
+    _log("[compact]", f"auto-compacting ~{estimated:,} tokens")
 
-    _log("[auto-compact]", f"context at ~{estimated} tokens, compacting…")
-
-    # Find the SystemMessage
-    sys_idx = None
-    for i, msg in enumerate(history):
-        if isinstance(msg, SystemMessage):
-            sys_idx = i
-            break
-
-    # Keep only the system message and last few messages
-    # Preserve the most recent screenshot if any
-    recent = []
+    sys_idx = next((i for i, m in enumerate(messages) if isinstance(m, SystemMessage)), None)
+    recent: list = []
     screenshot_found = False
-    for msg in reversed(history):
-        content = str(msg.content) if hasattr(msg, 'content') else ""
-        is_screenshot = content.startswith("data:image/")
-        if is_screenshot and not screenshot_found:
+    for msg in reversed(messages):
+        content = str(msg.content) if hasattr(msg, "content") else ""
+        if content.startswith("data:image/") and not screenshot_found:
             recent.insert(0, msg)
             screenshot_found = True
-        elif not is_screenshot:
+        elif not content.startswith("data:image/"):
             recent.insert(0, msg)
             if len(recent) >= 6:
                 break
 
-    compacted = [history[sys_idx]] if sys_idx is not None else []
+    compacted = [messages[sys_idx]] if sys_idx is not None else []
     compacted.append(HumanMessage(
-        content="[Auto-compacted] Context was too large. "
-        "Previous scan results have been cleared. The page is still loaded "
-        "in the browser. Use webpage_screenshot() or fetch_content() to "
-        "see the current state."
+        content="[Auto-compacted] Context cleared. The page is still loaded in the browser. "
+                "Use webpage_screenshot() or fetch_content() to see current state."
     ))
-    compacted.append(AIMessage(content="Understood. I'll work with the current browser state."))
+    compacted.append(AIMessage(content="Understood."))
     compacted.extend(recent)
-
-    _log("[auto-compact]", f"{len(history)} -> {len(compacted)} messages")
+    _log("[compact]", f"{len(messages)} -> {len(compacted)} messages")
     return compacted
 
+
+def _apply_compact(history: list, result_str: str) -> list:
+    """Trim history when the agent called compact_context."""
+    summary = ""
+    if "Preserved summary:" in result_str:
+        summary = result_str.split("Preserved summary:", 1)[1].strip()
+    sys_msg = next((m for m in history if isinstance(m, SystemMessage)), None)
+    compacted = [sys_msg] if sys_msg else []
+    compacted.append(HumanMessage(content=f"[Context compacted] {summary}"))
+    compacted.append(AIMessage(content="Context compacted. Proceeding."))
+    _log("[compact]", f"manual compact: {len(history)} -> {len(compacted)} messages")
+    return compacted
+
+
+# ---------------------------------------------------------------------------
+# Agent turn
+# ---------------------------------------------------------------------------
+
+def _execute_turn(history: list, llm) -> list:
+    """Run LLM + tools loop for one user command. Returns updated history."""
+    for round_i in range(_MAX_ROUNDS_PER_TURN):
+        _log("[agent]", f"round {round_i + 1}/{_MAX_ROUNDS_PER_TURN}")
+
+        try:
+            history = _auto_compact(history)
+            response = llm.invoke(history)
+        except Exception as exc:
+            err = str(exc)
+            _log("[agent]", f"LLM error: {err}")
+            if any(kw in err.lower() for kw in ("400", "context", "token")):
+                history = _auto_compact(history, max_tokens=50_000)
+                try:
+                    response = llm.invoke(history)
+                except Exception as exc2:
+                    history.append(AIMessage(content=f"Context overflow: {exc2}"))
+                    return history
+            else:
+                history.append(AIMessage(content=f"Error: {err[:500]}"))
+                return history
+
+        history.append(response)
+
+        if not response.tool_calls:
+            _log("[agent]", "done — no more tool calls")
+            return history
+
+        tool_names = [tc["name"] for tc in response.tool_calls]
+        _log("[agent]", f"calling {len(response.tool_calls)} tool(s): {tool_names}")
+
+        for tc in response.tool_calls:
+            name = tc["name"]
+            args = tc.get("args", {})
+            _log("[agent]", f"  {name}: {_trunc(json.dumps(args), 200)}")
+
+            fn = _TOOL_MAP.get(name)
+            try:
+                result = str(fn.invoke(args)) if fn else f"Unknown tool: {name}"
+            except Exception as e:
+                result = f"Error: {e}"
+                _log("[agent]", f"  FAILED: {e}")
+
+            if result.startswith("data:image/"):
+                _log("[agent]", f"  screenshot: {len(result) // 1024}KB")
+            else:
+                _log("[agent]", f"  result: {_trunc(result, 300)}")
+
+            history.append(ToolMessage(
+                content=result, tool_call_id=tc["id"], name=name
+            ))
+
+            if name == "compact_context":
+                history = _apply_compact(history, result)
+                break
+
+    history.append(AIMessage(content="Reached maximum rounds — stopping."))
+    return history
+
+
+# ---------------------------------------------------------------------------
+# Entry point
+# ---------------------------------------------------------------------------
 
 def main():
     validate_all()
 
-    parser = argparse.ArgumentParser(description="QA Tester Agent")
-    parser.add_argument("--set-reference", action="store_true",
-                        help="Capture and save a reference snapshot")
-    parser.add_argument("--test", action="store_true",
-                        help="Run QA test against saved reference")
-    parser.add_argument("--url", type=str, help="Target URL")
-    parser.add_argument("--scenarios", action="store_true",
-                        help="Run all QA scenarios from docs/scenarios.md")
-    parser.add_argument("--scenarios-file", type=str, default="docs/scenarios.md",
-                        help="Path to scenarios markdown file")
+    parser = argparse.ArgumentParser(description="QA Tester Agent — interactive REPL")
+    parser.add_argument("--url", type=str, help="URL to navigate to on startup")
     args = parser.parse_args()
 
-    if args.scenarios:
-        url = args.url or input("URL: ").strip()
-        credentials = get_credential_store().all()
-        _log("[main]", "initialising browser for scenario run...")
-        get_browser_manager().get_page()
-        _log("[main]", f"parsing scenarios from {args.scenarios_file}...")
-        scenarios = parse_scenarios(args.scenarios_file)
-        _log("[main]", f"parsed {len(scenarios)} scenarios")
-        results = run_all_scenarios(scenarios, credentials, url)
-        report_path = write_scenario_report(results)
-        print_summary(results)
-        return
-
-    url = args.url or input("URL: ").strip()
-
-    ref_exists = storage.reference_exists(url)
-
-    if not ref_exists:
-        mode = "set_reference"
-        print("No reference snapshot found. Running set-reference flow automatically.")
-    elif args.set_reference:
-        mode = "set_reference"
-    else:
-        ans = input("Reference found. Run QA test? [y/N]: ").strip().lower()
-        if ans != "y":
-            return
-        mode = "test"
-
-    credentials = get_credential_store().all()
-
-    _log("[main]", "initialising browser on main thread…")
+    _log("[main]", "initialising browser…")
     get_browser_manager().get_page()
     _log("[main]", "browser ready")
 
-    _log("[main]", f"invoking graph ({mode} mode)…")
-    start = time.time()
-    result = graph.invoke({
-        "url": url,
-        "mode": mode,
-        "messages": [],
-        "credentials": credentials,
-    })
-    _log("[main]", f"graph finished ({time.time() - start:.1f}s)")
+    credentials = get_credential_store().all()
+    creds_display = json.dumps(credentials, indent=2) if credentials else "none"
+    system = qa_agent_system(credentials_display=creds_display)
 
-    if mode == "set_reference":
-        _log("[main]", "reference saved, exiting")
-        print("Reference saved.")
-        return
+    history: list = [SystemMessage(content=system)]
+    llm = get_llm().bind_tools(_TOOLS)
 
-    issues = result.get("issues", [])
-    _log("[main]", f"test complete: {len(issues)} issue(s)")
-    print(f"Test complete — {len(issues)} issue(s) found.")
+    if args.url:
+        history.append(HumanMessage(content=f"Navigate to {args.url} and capture the page."))
+        history = _execute_turn(history, llm)
+        last_content = str(history[-1].content) if hasattr(history[-1], "content") else ""
+        if last_content.strip():
+            print(f"\nAgent: {last_content}\n")
 
-    # Keep browser alive — do NOT close it. Chat agent reuses the same page.
-    print()
-    print("You can now ask follow-up questions. Type 'done' to exit.")
-    print()
+    print("QA Agent ready. Type a command (e.g. 'click the Login button', "
+          "'run scenarios on https://...'), or 'done' to exit.\n")
 
-    chat_llm = get_llm().bind_tools(_tools)
-
-    history = [
-        SystemMessage(content=(
-            f"You are a QA assistant helping investigate the page {url}. "
-            f"The automated test found {len(issues)} issues. "
-            "The browser is already on the target page — do NOT call navigate() "
-            "again unless the user asks you to go somewhere else.\n\n"
-            "Available tools:\n"
-            "- webpage_screenshot() — see the page visually\n"
-            "- fetch_content() — read text content\n"
-            "- fetch_html() — inspect page structure and find selectors\n"
-            "- click_link(selector, text) — click buttons/links. Use valid "
-            "Playwright selectors: CSS ('button', '.class', '#id') or text-based "
-            "('text=Login', 'button:has-text(\"Sign In\")'). "
-            "Optional 'text' param matches by visible text.\n"
-            "- fill_form(fields, submit_selector) — fill and submit forms. "
-            "fields is a JSON string like '{\"input[name=\\\"email\\\"]\": \"user@example.com\"}'\n"
-            "- scroll_down(amount) / scroll_to_top() — scroll the page\n"
-            "- compact_context(summary) — clear old screenshots/HTML to save tokens. "
-            "ALWAYS call this after finding what you need and before interacting.\n"
-            "- navigate(url) — go to a new URL (only if user asks)\n"
-            "- clear_session() — clear cookies/session\n"
-            "- write_report(issues) — write QA report CSV\n\n"
-            "CRITICAL rules:\n"
-            "1. Call compact_context(summary) after EVERY scan. Do NOT accumulate "
-            "screenshots or large HTML dumps in context.\n"
-            "2. Use valid Playwright selectors only. :contains() is jQuery, NOT valid.\n"
-            "3. Be brief. Answer the user directly.\n"
-            f"\nInitial issues: {json.dumps(issues, indent=2)}"
-        )),
-    ]
-
-    _log("[main]", "entering interactive chat loop")
-    while True:
-        try:
-            user_input = input("You: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            _log("[main]", "user exited chat")
-            break
-
-        if user_input.lower() == "done":
-            _log("[main]", "user exited chat")
-            break
-
-        _log("[chat]", f"user said: {_trunc(user_input, 200)}")
-        history.append(HumanMessage(content=user_input))
-
-        for round_i in range(12):
-            _log("[chat]", f"round {round_i + 1}: LLM thinking…")
-
+    try:
+        while True:
             try:
-                history = _auto_compact(history)
-                response = chat_llm.invoke(history)
-            except Exception as exc:
-                err_msg = str(exc)
-                _log("[chat]", f"LLM error: {err_msg}")
-                if "400" in err_msg or "context" in err_msg.lower() or "token" in err_msg.lower():
-                    _log("[chat]", "context overflow — force compacting and retrying")
-                    history = _auto_compact(history, max_tokens=50_000)
-                    try:
-                        response = chat_llm.invoke(history)
-                    except Exception as exc2:
-                        _log("[chat]", f"LLM retry also failed: {exc2}")
-                        print(f"\nAgent: Sorry, I hit a limit. The context is too large. "
-                              "Try clearing the session or starting fresh.\n")
-                        break
-                else:
-                    print(f"\nAgent: I encountered an error: {err_msg}\n")
-                    break
-
-            history.append(response)
-
-            if not response.tool_calls:
-                _log("[chat]", "LLM done — no tool calls")
+                user_input = input("> ").strip()
+            except (EOFError, KeyboardInterrupt):
                 break
 
-            tool_names = [tc["name"] for tc in response.tool_calls]
-            _log("[chat]", f"LLM requested {len(response.tool_calls)} tool(s): {tool_names}")
+            if not user_input:
+                continue
+            if user_input.lower() in ("done", "exit", "quit"):
+                break
 
-            for tc in response.tool_calls:
-                name = tc["name"]
-                args = tc.get('args', {})
-                _log("[chat]", f"  executing {name}…", args=_trunc(json.dumps(args, indent=2), 200))
-                tool_fn = _tool_map.get(name)
-                if not tool_fn:
-                    result_str = f"Unknown tool: {name}"
-                else:
-                    try:
-                        result_str = tool_fn.invoke(args)
-                    except Exception as e:
-                        result_str = f"Error: {e}"
-                        _log("[chat]", f"  FAILED: {e}")
-                result_str = str(result_str)
-                if result_str.startswith("data:image/"):
-                    kb = len(result_str) // 1024
-                    _log("[chat]", f"  screenshot result: {kb}KB base64")
-                else:
-                    _log("[chat]", f"  result: {_trunc(result_str, 300)}")
-                history.append(
-                    ToolMessage(
-                        content=result_str,
-                        tool_call_id=tc["id"],
-                        name=name,
-                    )
-                )
+            _log("[main]", f"user: {_trunc(user_input, 300)}")
+            history.append(HumanMessage(content=user_input))
+            history = _execute_turn(history, llm)
 
-                if name == "compact_context":
-                    summary = ""
-                    content = str(result_str)
-                    if "Preserved summary:" in content:
-                        summary = content.split("Preserved summary:", 1)[1].strip()
-                    sys_msg = None
-                    for m in history:
-                        if isinstance(m, SystemMessage):
-                            sys_msg = m
-                            break
-                    old_count = len(history)
-                    history = [sys_msg] if sys_msg else []
-                    history.append(HumanMessage(
-                        content=f"[Context compacted] {summary}"
-                    ))
-                    history.append(AIMessage(
-                        content="Context compacted. Proceeding with the saved summary."
-                    ))
-                    _log("[chat]", f"compacted {old_count} -> {len(history)} messages")
-                    break
-
-        content = str(response.content) if hasattr(response, "content") else str(response)
-        _log("[chat]", f"agent response: {_trunc(content, 500)}")
-
-        if not content.strip():
-            _log("[chat]", "empty response, retrying without tools")
-            try:
-                content = str(get_llm().invoke(history).content)
-            except Exception:
-                content = "I couldn't process that request. Please try again."
-
-        print(f"\nAgent: {content}\n")
+            last = history[-1]
+            content = str(last.content) if hasattr(last, "content") else str(last)
+            if content.strip():
+                print(f"\nAgent: {content}\n")
+    finally:
+        _log("[main]", "shutting down browser…")
+        get_browser_manager().close()
 
 
 if __name__ == "__main__":

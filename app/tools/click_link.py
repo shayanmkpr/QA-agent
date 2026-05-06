@@ -21,7 +21,8 @@ def click_link(selector: str, text: str = "") -> str:
     mgr = get_browser_manager()
     try:
         if text:
-            selector = f"{selector}:has-text({text!r})"
+            escaped = text.replace('"', '\\"')
+            selector = f'{selector}:has-text("{escaped}")'
         mgr.click(selector)
         page = mgr.get_page()
         return f"[click_link] clicked '{selector}', now at {page.url} (title: {page.title()})"

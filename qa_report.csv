@@ -1,1 +1,2 @@
 URL,Issue Type,Description,Category
+,accessibility,"Page is not loaded or inaccessible. HTML content is empty, and no visual content is visible in the screenshot. No login or actionable elements are present.",functional

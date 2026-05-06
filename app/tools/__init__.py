@@ -9,6 +9,9 @@ from app.tools.write_report import write_report
 from app.tools.clear_session import clear_session
 from app.tools.scroll import scroll_down, scroll_to_top
 from app.tools.compact_context import compact_context
+from app.tools.check_console import check_console_errors
+from app.tools.check_network import check_network
+from app.tools.hover import hover
 
 __all__ = [
     "navigate",
@@ -23,4 +26,7 @@ __all__ = [
     "scroll_down",
     "scroll_to_top",
     "compact_context",
+    "check_console_errors",
+    "check_network",
+    "hover",
 ]

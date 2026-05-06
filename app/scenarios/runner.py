@@ -11,6 +11,7 @@ from langchain_openai import ChatOpenAI
 from app.scenarios.models import Scenario, ScenarioResult
 from app.scenarios.parser import parse_scenarios
 from app.scenarios.prompts import build_scenario_prompt
+from prompts.templates import login_setup
 from app.tools import (
     navigate,
     click_link,
@@ -294,19 +295,7 @@ def _run_login_setup(credentials: dict, base_url: str) -> Optional[str]:
     llm = _get_scenario_llm().bind_tools(restricted_tools)
 
     creds_json = json.dumps(credentials)
-    prompt = (
-        f"You are a QA assistant. Log in to {base_url}.\n\n"
-        "Steps:\n"
-        "1. Navigate to the site. Look for a Login / Sign In link and click it.\n"
-        "2. Fill in the login form using the credentials below.\n"
-        "3. Submit the form.\n"
-        "4. Verify you reach an authenticated page (dashboard, account, profile, etc.).\n"
-        "5. If there's a banner or modal to dismiss, handle it.\n"
-        "6. Call compact_context('Logged in successfully') when done, then stop.\n\n"
-        f"Credentials: {creds_json}\n\n"
-        "If no login link is visible, try navigating to /login, /signin, or /auth.\n"
-        "If you cannot log in after trying reasonable approaches, report what happened."
-    )
+    prompt = login_setup(base_url=base_url, credentials_json=creds_json)
 
     history: list = [SystemMessage(content=prompt)]
 
