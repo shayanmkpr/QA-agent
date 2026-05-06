@@ -52,7 +52,9 @@ On subsequent calls to `navigate()` or any other page-dependent method, steps 3�
 - **`fill_fields(data: dict, submit_selector: str = "") → str`** — Fills form fields using `page.fill()` for each key-value pair in `data` (key = CSS selector, value = text). If `submit_selector` is provided, clicks that element to submit the form; otherwise presses `Enter` on the last field. Waits for network idle and returns the resulting URL.
 - **`get_current_html() → str`** — Returns the full HTML of the persistent page via `page.content()`.
 - **`get_current_text() → str`** — Extracts visible text from the persistent page. Strips `<script>`, `<style>`, `<nav>`, `<footer>`, `<header>`, and `<aside>` elements via BeautifulSoup, then returns deduplicated non-empty lines.
-- **`screenshot_current() → str`** — Takes a full-page PNG screenshot and returns it as a `data:image/png;base64,...` data URI string.
+- **`screenshot_current() → str`** — Takes a full-page PNG screenshot (full_page=True) and returns it as a `data:image/png;base64,...` data URI string.
+- **`scroll_down(amount: int = 600) → dict`** — Scrolls the page down by `amount` pixels using `window.scrollBy`. Returns `{scroll_y, scrolled, at_bottom}` where `at_bottom` is true when the viewport has reached the document bottom. Used by the agent to scan long pages section by section.
+- **`scroll_to_top() → dict`** — Scrolls to the top of the page via `window.scrollTo(0,0)`. Returns `{scroll_y: 0, scrolled: "to_top", at_bottom: false}`.
 
 ### Backward-compatibility wrappers (navigate then act)
 

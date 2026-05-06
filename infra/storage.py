@@ -14,9 +14,14 @@ from typing import Optional
 DEFAULT_DATA_DIR = Path(__file__).resolve().parents[1] / "data"
 
 
+def _normalize_url(url: str) -> str:
+    """Strip trailing slash so `example.com` and `example.com/` share one reference."""
+    return url.rstrip("/")
+
+
 def _url_to_filename(url: str) -> str:
     """Create a filesystem-safe filename from a URL using a short hash."""
-    return hashlib.sha256(url.encode("utf-8")).hexdigest()[:32] + ".json"
+    return hashlib.sha256(_normalize_url(url).encode("utf-8")).hexdigest()[:32] + ".json"
 
 
 def _ensure_dir() -> Path:

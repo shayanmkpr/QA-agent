@@ -15,8 +15,11 @@ from bs4 import BeautifulSoup
 
 
 def compress_image(data_uri: str, max_size: int = 1024) -> str:
-    """Resize an image so the longest edge <= max_size. Returns a PNG data URI."""
-    b64_data = data_uri.split(",", 1)[1] if "," in data_uri else data_uri
+    """Resize an image so the longest edge <= max_size. Returns a PNG data URI.
+    Returns empty string for empty/missing input."""
+    if not data_uri or "," not in data_uri:
+        return ""
+    b64_data = data_uri.split(",", 1)[1]
     raw_len = len(b64_data)
     img = Image.open(io.BytesIO(base64.b64decode(b64_data)))
 
