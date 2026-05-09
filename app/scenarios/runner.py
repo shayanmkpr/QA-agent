@@ -1,8 +1,6 @@
-import csv
 import json
 import time
 import re
-from pathlib import Path
 from typing import Optional
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -26,10 +24,8 @@ from app.tools import (
 )
 from infra.browser import get_browser_manager
 from infra.config import PROVIDER, _registry
-from infra.credentials import get_credential_store
+from infra.container import scenario_reports
 from infra.logging import _log, _trunc
-
-REPORT_FILE = "qa_scenarios_report.csv"
 
 _SCENARIO_TOOLS = [
     navigate,
@@ -389,29 +385,11 @@ def run_all_scenarios(
 
 
 def write_scenario_report(results: list[ScenarioResult]) -> str:
-    """Write scenario results to a CSV report file. Returns the file path."""
-    filepath = Path(REPORT_FILE)
-    with open(filepath, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow([
-            "Scenario ID", "Section", "Title", "Status",
-            "Duration (s)", "Steps", "Findings", "Error"
-        ])
-        for r in results:
-            writer.writerow([
-                r.scenario_id,
-                r.section,
-                r.title,
-                r.status,
-                round(r.duration_seconds, 1),
-                r.steps_attempted,
-                r.findings[:500],
-                r.error_message,
-            ])
-    return str(filepath)
+    """Write scenario results via the active report repository."""
+    return scenario_reports().write(results)
 
 
-def print_summary(results: list[ScenarioResult]) -> None:
+def print_summary(results: list[ScenarioResult], report_destination: str = "") -> None:
     """Print a summary of the scenario run results."""
     pass_count = sum(1 for r in results if r.status == "PASS")
     fail_count = sum(1 for r in results if r.status == "FAIL")
@@ -429,7 +407,8 @@ def print_summary(results: list[ScenarioResult]) -> None:
     print(f"  Error:    {error_count}")
     print(f"  Skip:     {skip_count}")
     print(f"  Duration: {total_time:.0f}s ({total_time / 60:.1f}m)")
-    print(f"  Report:   {REPORT_FILE}")
+    if report_destination:
+        print(f"  Report:   {report_destination}")
     print("=" * 60)
 
     if fail_count > 0:

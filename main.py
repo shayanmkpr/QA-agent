@@ -7,9 +7,7 @@ from langchain_core.tools import tool as langchain_tool
 
 from infra.validate import validate_all
 from infra.config import get_llm
-from infra.browser import get_browser_manager
-from infra.credentials import get_credential_store
-from infra.db import get_db
+from infra import container
 from infra.logging import _log, _trunc
 from prompts.templates import qa_agent_system
 from app.scenarios.runner import run_all_scenarios, write_scenario_report, print_summary
@@ -59,10 +57,10 @@ def run_scenarios(scenarios_file: str = _DEFAULT_SCENARIOS_FILE, url: str = "") 
     scenarios = parse_scenarios(str(file_path))
     if not scenarios:
         return "Error: no scenarios parsed from the file."
-    credentials = get_credential_store().all()
+    credentials = container.credentials().all()
     results = run_all_scenarios(scenarios, credentials, url)
     report_path = write_scenario_report(results)
-    print_summary(results)
+    print_summary(results, report_path)
     pass_count = sum(1 for r in results if r.status == "PASS")
     fail_count = sum(1 for r in results if r.status == "FAIL")
     error_count = sum(1 for r in results if r.status == "ERROR")
@@ -224,10 +222,11 @@ def main():
     args = parser.parse_args()
 
     _log("[main]", "initialising browser…")
-    get_browser_manager().get_page()
+    container.browser().get_page()
     _log("[main]", "browser ready")
 
-    credentials = get_credential_store().all()
+    credentials = container.credentials().all()
+    creds_display = json.dumps(credentials, indent=2) if credentials else "none"
     creds_display = json.dumps(credentials, indent=2) if credentials else "none"
     system = qa_agent_system(credentials_display=creds_display)
 
@@ -266,7 +265,7 @@ def main():
                 print(f"\nAgent: {content}\n")
     finally:
         _log("[main]", "shutting down browser…")
-        get_browser_manager().close()
+        container.browser().close()
 
 
 if __name__ == "__main__":
