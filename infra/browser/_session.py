@@ -9,8 +9,10 @@ from infra.logging import _log
 from infra.browser._monitoring import _setup_monitoring
 
 
-def _init(self, browser_type: str = "chromium") -> None:
+def _init(self, browser_type: str = "chromium", headless: bool = True, slow_mo: int = 0) -> None:
     self.browser_type = browser_type
+    self.headless = headless
+    self.slow_mo = slow_mo
     self._pw = None
     self._browser = None
     self._context = None
@@ -33,7 +35,10 @@ def _ensure_ready(self) -> Optional[str]:
     if self._browser is None:
         try:
             launcher = getattr(self._pw, self.browser_type)
-            self._browser = launcher.launch()
+            self._browser = launcher.launch(
+                headless=self.headless,
+                slow_mo=self.slow_mo,
+            )
         except Exception as exc:
             return (
                 f"{self.browser_type} browser not found.\n\n"

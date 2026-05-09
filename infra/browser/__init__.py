@@ -43,8 +43,8 @@ class BrowserManager:
 _browser_manager: Optional[BrowserManager] = None
 
 
-def get_browser_manager() -> BrowserManager:
+def get_browser_manager(headless: bool = True, slow_mo: int = 0) -> BrowserManager:
     global _browser_manager
     if _browser_manager is None:
-        _browser_manager = BrowserManager()
+        _browser_manager = BrowserManager(headless=headless, slow_mo=slow_mo)
     return _browser_manager

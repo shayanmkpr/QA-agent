@@ -8,6 +8,7 @@ from langchain_core.tools import tool as langchain_tool
 from infra.validate import validate_all
 from infra.config import get_llm
 from infra import container
+from infra.browser import get_browser_manager
 from infra.logging import _log, _trunc
 from prompts.templates import qa_agent_system
 from app.scenarios.runner import run_all_scenarios, write_scenario_report, print_summary
@@ -219,10 +220,15 @@ def main():
 
     parser = argparse.ArgumentParser(description="QA Tester Agent — interactive REPL")
     parser.add_argument("--url", type=str, help="URL to navigate to on startup")
+    parser.add_argument("--headed", action="store_true",
+                        help="Show the real browser window (not headless)")
+    parser.add_argument("--slow-mo", type=int, default=0, metavar="MS",
+                        help="Slow-motion delay in ms between actions (e.g. 100)")
     args = parser.parse_args()
 
+    _log("[main]", f"browser mode: headless={not args.headed}, slow_mo={args.slow_mo}")
     _log("[main]", "initialising browser…")
-    container.browser().get_page()
+    get_browser_manager(headless=not args.headed, slow_mo=args.slow_mo).get_page()
     _log("[main]", "browser ready")
 
     credentials = container.credentials().all()
