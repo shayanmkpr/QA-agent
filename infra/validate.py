@@ -24,10 +24,12 @@ def check_llm_provider() -> None:
                 "OPENROUTER_API_KEY is required when LLM_PROVIDER=openrouter. "
                 "Set it in your .env file or environment."
             )
+    elif provider == "local":
+        pass
     else:
         raise EnvError(
             f"Unknown LLM_PROVIDER '{provider}'. "
-            f"Supported providers: openai, openrouter."
+            f"Supported providers: openai, openrouter, local."
         )
 
 

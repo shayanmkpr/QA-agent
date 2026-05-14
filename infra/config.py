@@ -67,9 +67,19 @@ def _openrouter():
     )
 
 
+def _local():
+    return ChatOpenAI(
+        model=os.getenv("LOCAL_MODEL", "gpt-4o-mini"),
+        temperature=0,
+        base_url=os.getenv("LOCAL_BASE_URL", "http://localhost:11434/v1"),
+        api_key=os.getenv("LOCAL_API_KEY", "not-needed"),
+    )
+
+
 _registry = {
     "openai": _openai,
     "openrouter": _openrouter,
+    "local": _local,
 }
 
 

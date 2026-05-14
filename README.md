@@ -164,10 +164,13 @@ Set in `.env`:
 
 | Variable | Default | Description |
 |---|---|---|
-| `LLM_PROVIDER` | `openrouter` | `openai` or `openrouter` |
+| `LLM_PROVIDER` | `openrouter` | `openai`, `openrouter`, or `local` |
 | `OPENROUTER_API_KEY` | — | OpenRouter API key |
 | `OPENROUTER_MODEL` | `openai/gpt-4o-mini` | Model (OpenRouter) |
 | `OPENAI_API_KEY` | — | OpenAI API key |
 | `OPENAI_MODEL` | `gpt-4o-mini` | Model (OpenAI) |
+| `LOCAL_MODEL` | `gpt-4o-mini` | Model (local) |
+| `LOCAL_BASE_URL` | `http://localhost:11434/v1` | Local server base URL |
+| `LOCAL_API_KEY` | `not-needed` | Local server API key |
 | `QA_VERBOSE` | `true` | Set to `false` to silence tool logs |
 | `INCLUDE_HTML_IN_VLM` | `true` | Include HTML length in visual comparison |
